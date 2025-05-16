@@ -8,6 +8,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include <optional>
+
 #include <cuda_fp16.h>
 
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800

@@ -1,0 +1,472 @@
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+
+cuda_library(
+    name = "cute",
+    hdrs = glob(["csrc/cutlass/include/cute/**/*"]),
+    includes = ["csrc/cutlass/include"],
+)
+
+cuda_library(
+    name = "cutlass_utils",
+    hdrs = glob(["csrc/cutlass/tools/util/include/**/*"]),
+    includes = ["csrc/cutlass/tools/util/include"],
+    deps = [":cute"],
+)
+
+cuda_library(
+    name = "cutlass",
+    hdrs = glob(["csrc/cutlass/include/cutlass/**/*"]),
+    includes = ["csrc/cutlass/include"],
+    deps = [
+        ":cute",
+        ":cutlass_utils",
+    ],
+)
+
+cuda_library(
+    name = "c10_stub",
+    hdrs = ["csrc/c10/cuda/CUDAException.h"],
+    includes = ["csrc"],
+)
+
+cuda_library(
+    name = "ATen_stub",
+    hdrs = [
+        "csrc/ATen/cuda/CUDAGeneratorImpl.h",
+        "csrc/ATen/cuda/detail/UnpackRaw.cuh",
+    ],
+    includes = ["csrc"],
+)
+
+cuda_library(
+    name = "flashattn-headers",
+    hdrs = glob(["csrc/flash_attn/src/*.h", "csrc/flash_attn/src/*.cuh"]),
+    includes = ["csrc/flash_attn/src/"],
+)
+
+cuda_library(
+    name = "flashattn",
+    defines = [],
+    deps = [
+        "//:flashattn-headers",
+        "//:cute",
+        "//:cutlass",
+        "//:c10_stub",
+        "//:ATen_stub",
+    ],
+    copts = [
+        "-DENABLE_FP8",
+        "-U__CUDA_NO_HALF_OPERATORS__",
+        "-U__CUDA_NO_HALF_CONVERSIONS__",
+        "-U__CUDA_NO_HALF2_OPERATORS__",
+        "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+        "--expt-relaxed-constexpr",
+        "--expt-extended-lambda",
+        "--use_fast_math",    
+        #"-G",
+    ],
+    srcs = [
+        #"csrc/flash_attn/flash_api.cpp",
+        "csrc/flash_attn/src/flash_fwd_hdim32_fp16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim32_bf16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim64_fp16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim64_bf16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim96_fp16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim96_bf16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim128_fp16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim128_bf16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim160_fp16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim160_bf16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim192_fp16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim192_bf16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim256_fp16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim256_bf16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim32_fp16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim32_bf16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim64_fp16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim64_bf16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim96_fp16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim96_bf16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim128_fp16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim128_bf16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim160_fp16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim160_bf16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim192_fp16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim192_bf16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim256_fp16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_hdim256_bf16_causal_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim32_fp16_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim32_bf16_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim64_fp16_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim64_bf16_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim96_fp16_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim96_bf16_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim128_fp16_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim128_bf16_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim192_fp16_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim192_bf16_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim256_fp16_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim256_bf16_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim32_fp16_causal_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim32_bf16_causal_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim64_fp16_causal_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim64_bf16_causal_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim96_fp16_causal_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim96_bf16_causal_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim128_fp16_causal_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim128_bf16_causal_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim192_fp16_causal_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim192_bf16_causal_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim256_fp16_causal_sm80.cu",
+        #"csrc/flash_attn/src/flash_bwd_hdim256_bf16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim32_fp16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim32_bf16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim64_fp16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim64_bf16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim96_fp16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim96_bf16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim128_fp16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim128_bf16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim160_fp16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim160_bf16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim192_fp16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim192_bf16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim256_fp16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim256_bf16_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim32_fp16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim32_bf16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim64_fp16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim64_bf16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim96_fp16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim96_bf16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim128_fp16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim128_bf16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim160_fp16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim160_bf16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim192_fp16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim192_bf16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim256_fp16_causal_sm80.cu",
+        "csrc/flash_attn/src/flash_fwd_split_hdim256_bf16_causal_sm80.cu",
+    ],
+)
+
+cuda_library(
+    name = "capi",
+    hdrs = ["capi/capi.h"],
+    srcs = ["capi/capi.cu"],
+    copts = [],
+    deps = [":flashattn"],
+    alwayslink = True,
+)
+
+cc_shared_library(
+    name = "flashattn_so",
+    deps = [":capi"],
+)
+
+cuda_library(
+    name = "flashattn-sm90-headers",
+    hdrs = glob(["hopper/*.h", "hopper/*.hpp"]),
+    includes = ["hopper/"],
+)
+
+cuda_library(
+    name = "flashattn-sm90",
+    defines = [],
+    deps = [
+        "//:flashattn-sm90-headers",
+        "//:cute",
+        "//:cutlass",
+        "//:c10_stub",
+        "//:ATen_stub",
+    ],
+    copts = [
+        "-U__CUDA_NO_HALF_OPERATORS__",
+        "-U__CUDA_NO_HALF_CONVERSIONS__",
+        "-U__CUDA_NO_HALF2_OPERATORS__",
+        "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+        "--expt-relaxed-constexpr",
+        "--expt-extended-lambda",
+        "--use_fast_math",
+    ],
+    srcs = [
+        "hopper/instantiations/flash_fwd_hdim128_bf16_paged_sm90.cu",
+        "hopper/flash_prepare_scheduler.cu",
+    ],
+)
+
+cc_shared_library(
+    name = "flashattn_sm90_so",
+    deps = [":flashattn-sm90"],
+)
+
+#cuda_library(
+#    name = "flashinfer",
+#    hdrs = glob(["include/flashinfer/**/*"]),
+#    defines = [
+#        "FLASHINFER_ENABLE_F16",
+#        "FLASHINFER_ENABLE_BF16",
+#        # "FLASHINFER_ENABLE_FP8_E4M3",
+#        # "FLASHINFER_ENABLE_FP8_E5M2",
+#    ],
+#    includes = ["include"],
+#    deps = [
+#        "//:cute",
+#        "//:cutlass",
+#    ],
+#)
+#
+#write_file(
+#    name = "pytorch_extension_utils_h",
+#    out = "csrc/pytorch_extension_utils.h",
+#    content = [],
+#)
+#
+#write_file(
+#    name = "pytorch_conversion_utils_h",
+#    out = "csrc/pytorch_conversion_utils.h",
+#    content = [],
+#)
+#
+#cc_library(
+#    name = "pytorch_dummies",
+#    hdrs = [
+#        "csrc/pytorch_extension_utils.h",
+#        "csrc/pytorch_conversion_utils.h",
+#    ],
+#    includes = ["csrc"],
+#)
+#
+#cc_library(
+#    name = "headers_generated",
+#    hdrs = [
+#        "generated/aot_default_additional_params.h",
+#    ],
+#    textual_hdrs = [
+#        "generated/dispatch.inc",
+#    ],
+#    includes = ["generated"],
+#    include_prefix = "generated",
+#    deps = [
+#        ":flashinfer",
+#        "//:cute",
+#        "//:cutlass",
+#    ],
+#)
+#
+#cc_library(
+#    name = "headers_inc",
+#    hdrs = [
+#        "csrc/aot_extension_utils.h",
+#    ],
+#    textual_hdrs = [
+#        "csrc/batch_decode_config.inc",
+#    ],
+#    includes = ["csrc"],
+#    deps = [
+#        ":pytorch_dummies",
+#        ":flashinfer",
+#        "//:cute",
+#        "//:cutlass",
+#    ],
+#)
+#
+#cuda_library(
+#    name = "kernels",
+#    srcs = [
+#        ":batch_decode_instances",
+#        ":batch_prefill_instances",
+#        ":batch_prefill_sm90_instances",
+#        ":pod_instances",
+#    ],
+#    copts = ["-diag-suppress", "177"],
+#    deps = [
+#        ":headers_generated",
+#        ":headers_inc",
+#        ":flashinfer",
+#        "//:cute",
+#        "//:cutlass",
+#     ],
+#)
+#
+#cuda_library(
+#    name = "flashinfer_ops",
+#    hdrs = [
+#        "src/utils.h",
+#        "src/flashinfer_ops.cuh",
+#        "src/flashinfer_ops_sm90.cuh",
+#    ],
+#    deps = [
+#        ":flashinfer",
+#        ":kernels",
+#    ],
+#)
+#
+#cuda_library(
+#    name = "capi",
+#    hdrs = ["capi/capi.h"],
+#    srcs = ["capi/capi.cu", "capi/capi_sm90.cu"],
+#    copts = [
+#        "-Xcompiler",
+#        "-Wno-switch-bool",
+#        #"-Xcompiler",
+#        #"-fvisibility=hidden",
+#    ],
+#    deps = [":flashinfer_ops"],
+#    alwayslink = True,
+#)
+#
+#cc_shared_library(
+#    name = "flashinfer_so",
+#    deps = [":capi"],
+#)
+#
+#head_dims = [
+#    "64",
+#    "128",
+#    "256",
+#]
+#
+#head_dim_vo = [
+#    "64",
+#    "128",
+#    "256",
+#]
+#
+#mask_mode_literal = [
+#    "MaskMode::kNone",
+#    "MaskMode::kCausal",
+#    "MaskMode::kCustom",
+#]
+#
+#pos_encoding_mode_literal = [
+#    "PosEncodingMode::kNone",
+#    "PosEncodingMode::kRoPELlama",
+#    "PosEncodingMode::kALiBi",
+#]
+#
+#dtype_literal = [
+#    # "half",
+#    "nv_bfloat16",
+#    # "float",
+#    # "__nv_fp8_e4m3",
+#    # "__nv_fp8_e5m2",
+#]
+#
+#kernel_instances(
+#    name = "batch_decode_instances",
+#    template = "csrc/batch_decode_kernel_inst.jinja",
+#    values = {
+#        "head_dim_qk": head_dims,
+#        "pos_encoding_mode": pos_encoding_mode_literal,
+#        "dtype_o": dtype_literal,
+#        "variant_name": ["AttentionVariant"],
+#    },
+#    pre_substitutions = {
+#        "#include <flashinfer/attention/decode.cuh>": "#include <flashinfer/attention_impl.cuh>",
+#        "#include \"batch_decode_config.inc\"": """\
+#using AttentionVariant = ::flashinfer::DefaultAttention<
+#    /*use_custom_mask=*/false,
+#    /*use_sliding_window=*/false,
+#    /*use_logits_soft_cap=*/false,
+#    /*use_alibi_bias=*/false>;
+#using Params = ::flashinfer::BatchDecodeParams<{{ dtype_o }}, {{ dtype_o }}, {{ dtype_o }}, int32_t>;
+#""",
+#    },
+#)
+#
+#kernel_instances(
+#    name = "batch_prefill_instances",
+#    template = "csrc/batch_prefill_paged_kernel_inst.jinja",
+#    values = {
+#        "head_dim_qk": head_dims,
+#        "pos_encoding_mode": pos_encoding_mode_literal,
+#        "use_fp16_qk_reduction": ["false"],
+#        "mask_mode": mask_mode_literal,
+#        "dtype_o": dtype_literal,
+#        "variant_name": ["AttentionVariant"],
+#    },
+#    pre_substitutions = {
+#        "head_dim_vo": "head_dim_qk",
+#        "#include <flashinfer/attention/prefill.cuh>": "#include <flashinfer/attention_impl.cuh>",
+#        "#include \"batch_prefill_config.inc\"": """\
+#using AttentionVariant = ::flashinfer::DefaultAttention<
+#    /*use_custom_mask=*/::flashinfer::{{ mask_mode }} == ::flashinfer::MaskMode::kCustom,
+#    /*use_sliding_window=*/false,
+#    /*use_logits_soft_cap=*/false,
+#    /*use_alibi_bias=*/false>;
+#using PagedParams = ::flashinfer::BatchPrefillPagedParams<{{ dtype_o }}, {{ dtype_o }}, {{ dtype_o }}, int32_t>;
+#""",
+#    },
+#)
+#
+#kernel_instances(
+#    name = "batch_prefill_sm90_instances",
+#    template = "csrc/batch_prefill_paged_sm90_kernel_inst.jinja",
+#    values = {
+#        "head_dim_qk": head_dims,
+#        "use_sliding_window": ["false"],
+#        "dtype_o": dtype_literal,
+#        "variant_name": ["LogitsSoftCap", "StandardAttention"],
+#        "mask_mode": mask_mode_literal,
+#    },
+#    pre_substitutions = {
+#        "{{ head_dim_vo }}": "{{ head_dim_qk }}",
+#        "#include \"batch_prefill_sm90_config.inc\"": """\
+##include <flashinfer/attention/hopper/default_params.cuh>
+##include <flashinfer/attention/hopper/variants.cuh>
+##include <flashinfer/cutlass_utils.cuh>
+#
+#using PagedParams = ::flashinfer::BatchPrefillPagedSm90Params<
+#    ::flashinfer::cutlass_dtype_t<{{ dtype_o }}>,
+#    ::flashinfer::cutlass_dtype_t<{{ dtype_o }}>,
+#    ::flashinfer::cutlass_dtype_t<{{ dtype_o }}>,
+#    int32_t>;
+#""",
+#    },
+#)
+#
+#kernel_instances(
+#    name = "pod_instances",
+#    template = "csrc/pod_kernel_inst.jinja",
+#    values = {
+#        "head_dim_qk": head_dims,
+#        "use_fp16_qk_reduction": ["false"],
+#        "mask_mode_p": mask_mode_literal,
+#        "mask_mode_d": mask_mode_literal,
+#        "dtype_o": dtype_literal,
+#        "variant_name_p": ["AttentionVariantP"],
+#        "variant_name_d": ["AttentionVariantD"],
+#    },
+#    pre_substitutions = {
+#        "head_dim_vo": "head_dim_qk",
+#        "#include <flashinfer/attention/prefill.cuh>": "#include <flashinfer/attention_impl.cuh>",
+#        "#include \"pod_config.inc\"": """\
+#using AttentionVariantP = ::flashinfer::DefaultAttention<
+#    /*use_custom_mask=*/::flashinfer::{{ mask_mode_p }} == ::flashinfer::MaskMode::kCustom,
+#    /*use_sliding_window=*/false,
+#    /*use_logits_soft_cap=*/false,
+#    /*use_alibi_bias=*/false>;
+#using AttentionVariantD = ::flashinfer::DefaultAttention<
+#    /*use_custom_mask=*/::flashinfer::{{ mask_mode_d }} == ::flashinfer::MaskMode::kCustom,
+#    /*use_sliding_window=*/false,
+#    /*use_logits_soft_cap=*/false,
+#    /*use_alibi_bias=*/false>;
+#using PrefillParams = ::flashinfer::SinglePrefillParams<{{ dtype_o }}, {{ dtype_o }}, {{ dtype_o }}>;
+#using DecodeParams = ::flashinfer::BatchPrefillPagedParams<{{ dtype_o }}, {{ dtype_o }}, {{ dtype_o }}, int32_t>;
+#""",
+#    },
+#)
+#
+#compile_pip_requirements(
+#    name = "requirements",
+#    src = "requirements.txt",
+#    requirements_txt = "requirements.lock.txt",
+#)
+#
+#py_console_script_binary(
+#    name = "jinja_cli",
+#    script = "jinja",
+#    pkg = "@pypi//jinja_cli",
+#    visibility = ["//visibility:public"],
+#)
