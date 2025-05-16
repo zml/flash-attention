@@ -1,0 +1,44 @@
+module(
+    name = "flash-attention",
+)
+
+bazel_dep(name = "googletest", version = "1.16.0")
+bazel_dep(name = "rules_cuda", version = "0.2.5")
+bazel_dep(name = "rules_cc", version = "0.1.1")
+bazel_dep(name = "bazel_skylib", version = "1.7.1")
+bazel_dep(name = "rules_python", version = "1.3.0")
+bazel_dep(name = "platforms", version = "0.0.11")
+
+archive_override(
+    module_name = "rules_cuda",
+    url = "https://github.com/bazel-contrib/rules_cuda/archive/4f7fe962b41e1a9cd025a0864099e895191fb9ae.tar.gz",
+    strip_prefix = "rules_cuda-4f7fe962b41e1a9cd025a0864099e895191fb9ae",
+)
+
+cuda = use_extension("@rules_cuda//cuda:extensions.bzl", "toolchain")
+cuda.toolkit(
+    name = "cuda",
+    toolkit_path = "/usr/local/cuda-12.8",
+)
+use_repo(cuda, "cuda")
+
+#python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+#python.toolchain(python_version = "3.11")
+#use_repo(python, "python_versions")
+#
+#pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+#pip.parse(
+#    download_only = True,
+#    # extra_pip_args = [
+#    #     "--abi=cp311",
+#    #     "--implementation=cp",
+#    #     "--python-version=311",
+#    #     "--platform=linux_x86_64",
+#    #     "--platform=manylinux2014_x86_64",
+#    # ],
+#    hub_name = "pypi",
+#    python_version = "3.11",
+#    requirements_lock = "//:requirements.lock.txt",
+#)
+#use_repo(pip, "pypi")
+
