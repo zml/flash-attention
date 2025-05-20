@@ -50,12 +50,16 @@ void set_params_fprop(Flash_fwd_params &params,
                       void* k,
                       void* v,
                       void* out,
+                      int64_t q_batch_stride,
                       int64_t q_row_stride,
                       int64_t q_head_stride,
+                      int64_t k_batch_stride,
                       int64_t k_row_stride,
                       int64_t k_head_stride,
+                      int64_t v_batch_stride,
                       int64_t v_row_stride,
                       int64_t v_head_stride,
+                      int64_t o_batch_stride,
                       int64_t o_row_stride,
                       int64_t o_head_stride,
                       DataType q_dtype,
@@ -92,16 +96,16 @@ void set_params_fprop(Flash_fwd_params &params,
     params.o_row_stride = o_row_stride;
     params.o_head_stride = o_head_stride;
 
-    //if (cu_seqlens_q_d == nullptr) {
-    //    params.q_batch_stride = q.stride(0);
-    //    params.k_batch_stride = k.stride(0);
-    //    params.v_batch_stride = v.stride(0);
-    //    params.o_batch_stride = out.stride(0);
-    //    if (seqlenq_ngroups_swapped) {
-    //         params.q_batch_stride *= seqlen_q;
-    //         params.o_batch_stride *= seqlen_q;
-    //    }
-    //}
+    if (cu_seqlens_q_d == nullptr) {
+        params.q_batch_stride = q_batch_stride;
+        params.k_batch_stride = k_batch_stride;
+        params.v_batch_stride = v_batch_stride;
+        params.o_batch_stride = o_batch_stride;
+        if (seqlenq_ngroups_swapped) {
+             params.q_batch_stride *= seqlen_q;
+             params.o_batch_stride *= seqlen_q;
+        }
+    }
 
     params.cu_seqlens_q = static_cast<int *>(cu_seqlens_q_d);
     params.cu_seqlens_k = static_cast<int *>(cu_seqlens_k_d);
@@ -166,7 +170,87 @@ void set_params_fprop(Flash_fwd_params &params,
     params.seqlenq_ngroups_swapped = seqlenq_ngroups_swapped;
 }
 
-void flashattn_batched_prefill_with_kvcache(
+// Find the number of splits that maximizes the occupancy. For example, if we have
+// batch * n_heads = 48 and we have 108 SMs, having 2 splits (efficiency = 0.89) is
+// better than having 3 splits (efficiency = 0.67). However, we also don't want too many
+// splits as that would incur more HBM reads/writes.
+// So we find the best efficiency, then find the smallest number of splits that gets 85%
+// of the best efficiency.
+inline int num_splits_heuristic(int batch_nheads_mblocks, int num_SMs, int num_n_blocks, int max_splits) {
+    // If we have enough to almost fill the SMs, then just use 1 split
+    if (batch_nheads_mblocks >= 0.8f * num_SMs) { return 1; }
+    max_splits = std::min({max_splits, num_SMs, num_n_blocks});
+    float max_efficiency = 0.f;
+    std::vector<float> efficiency;
+    efficiency.reserve(max_splits);
+    auto ceildiv = [](int a, int b) { return (a + b - 1) / b; };
+    // Some splits are not eligible. For example, if we have 64 blocks and choose 11 splits,
+    // we'll have 6 * 10 + 4 blocks. If we choose 12 splits, we'll have 6 * 11 + (-2) blocks
+    // (i.e. it's 11 splits anyway).
+    // So we check if the number of blocks per split is the same as the previous num_splits.
+    auto is_split_eligible = [&ceildiv, &num_n_blocks](int num_splits) {
+        return num_splits == 1 || ceildiv(num_n_blocks, num_splits) != ceildiv(num_n_blocks, num_splits - 1);
+    };
+    for (int num_splits = 1; num_splits <= max_splits; num_splits++) {
+        if (!is_split_eligible(num_splits)) {
+            efficiency.push_back(0.f);
+        } else {
+            float n_waves = float(batch_nheads_mblocks * num_splits) / num_SMs;
+            float eff = n_waves / ceil(n_waves);
+            // printf("num_splits = %d, eff = %f\n", num_splits, eff);
+            if (eff > max_efficiency) { max_efficiency = eff; }
+            efficiency.push_back(eff);
+        }
+    }
+    for (int num_splits = 1; num_splits <= max_splits; num_splits++) {
+        if (!is_split_eligible(num_splits)) { continue; }
+        if (efficiency[num_splits - 1] >= 0.85 * max_efficiency) {
+            // printf("num_splits chosen = %d\n", num_splits);
+            return num_splits;
+        }
+    }
+    return 1;
+}
+
+void set_params_splitkv(Flash_fwd_params &params, const int batch_size,
+    const int num_heads, const int head_size, const int max_seqlen_k, const int max_seqlen_q,
+    const int head_size_rounded, const float p_dropout,
+    const int num_splits, const int num_sm,
+    void* softmax_lse_accum, const int allocated_softmax_lse_accum_size, 
+    void* out_accum, const int allocated_out_accum_size) {
+
+    // This needs to match with run_mha_fwd_splitkv_dispatch
+    const int block_n = head_size <= 64 ? 256 : (head_size <= 128 ? 128 : 64);
+    const int num_n_blocks = (max_seqlen_k + block_n - 1) / block_n;
+    // Technically kBlockM = 64 only for the splitKV kernels, not the standard kernel.
+    // In any case we don't expect seqlen_q to be larger than 64 for inference.
+    const int num_m_blocks = (max_seqlen_q + 64 - 1) / 64;
+    params.num_splits = num_splits;
+
+    if (p_dropout == 0.0f) {  // SplitKV is not implemented for dropout
+        if (num_splits < 1) {
+            // We multiply number of SMs by 2 to hard-code the fact that we're using 128 threads per block.
+            params.num_splits = num_splits_heuristic(batch_size * num_heads * num_m_blocks, num_sm * 2, num_n_blocks, 128);
+        }
+        if (params.num_splits > 1) {
+            const int float_byte_size = 4;
+            const int softmax_lse_accum_size = params.num_splits * batch_size * num_heads * max_seqlen_q * float_byte_size;
+            CAPI_CHECK(softmax_lse_accum_size <= allocated_softmax_lse_accum_size, "Tensor allocated for softmax lse accum must be big enough");
+
+            const int out_accum_size = params.num_splits * batch_size * num_heads * max_seqlen_q * head_size_rounded * float_byte_size;
+            CAPI_CHECK(out_accum_size <= allocated_out_accum_size, "Tensor allocated for out accum must be big enough");
+
+            //softmax_lse_accum = torch::empty({params.num_splits, batch_size, num_heads, max_seqlen_q}, opts.dtype(at::kFloat));
+            //out_accum = torch::empty({params.num_splits, batch_size, num_heads, max_seqlen_q, head_size_rounded}, opts.dtype(at::kFloat));
+
+            params.softmax_lseaccum_ptr = softmax_lse_accum;
+            params.oaccum_ptr = out_accum;
+        }
+        CAPI_CHECK(params.num_splits <= 128, "num_splits > 128 not supported");
+    }
+}
+
+void flashattn_mha_varlen_fwd(
         void* q, // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
         void* k, // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
         void* v, // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
@@ -176,26 +260,32 @@ void flashattn_batched_prefill_with_kvcache(
         void* seqused_k, // b. If given, only this many elements of each batch element's keys are used.
         // leftpad_k_ (disabled because I don't know what it is lol)
         void* block_table, // batch_size x max_num_blocks_per_seq
+        void* softmax_lse, // num_heads x total_q
         void* alibi_slopes_, // num_heads or b x num_heads
-        int max_seqlen_q,
-        const int max_seqlen_k,
-        const float softmax_scale,
-        bool is_causal,
-        int window_size_left,
-        int window_size_right,
-
+        void* softmax_lse_accum,
+        void* out_accum,
+        DataType q_dtype,
+        int64_t q_batch_stride,
         int64_t q_row_stride,
         int64_t q_head_stride,
+        int64_t k_batch_stride,
         int64_t k_row_stride,
         int64_t k_head_stride,
+        int64_t v_batch_stride,
         int64_t v_row_stride,
         int64_t v_head_stride,
+        int64_t o_batch_stride,
         int64_t o_row_stride,
         int64_t o_head_stride,
         int64_t block_table_batch_stride,
-        int64_t k_batch_stride,
-        int64_t v_batch_stride,
-        DataType q_dtype,
+        const int softmax_lse_accum_size,
+        const int out_accum_size,
+        int max_seqlen_q,
+        const int max_seqlen_k,
+        bool is_causal,
+        const float softmax_scale,
+        int window_size_left,
+        int window_size_right,
         uint32_t total_q,
         uint32_t batch_size,
         uint32_t num_heads,
@@ -216,15 +306,15 @@ void flashattn_batched_prefill_with_kvcache(
     // TODO(Corentin):
     // Faster to transpose q from (b, 1, (nheads_kv ngroups), d) to (b, ngroups, nheads_kv, d) in this case
     // H/t Daniel Haziza
-    const int seqlenq_ngroups_swapped = 0;
-    //const int seqlenq_ngroups_swapped = max_seqlen_q == 1 && num_heads > num_heads_k && window_size_left < 0 && window_size_right < 0 && p_dropout == 0.f && head_size % 8 == 0 && !alibi_slopes_.has_value();
-    //const int ngroups = num_heads / num_heads_k;
-    //if (seqlenq_ngroups_swapped) {
-    //    q = q.reshape({batch_size, num_heads_k, ngroups, head_size}).transpose(1, 2).reshape({batch_size * ngroups, num_heads_k, head_size});
-    //    max_seqlen_q = ngroups;
-    //    num_heads = num_heads_k;
-    //    cu_seqlens_q_d = nullptr;
-    //}
+    const int seqlenq_ngroups_swapped = max_seqlen_q == 1 && num_heads > num_heads_k && window_size_left < 0 && window_size_right < 0 && head_size % 8 == 0 && alibi_slopes_ == nullptr;
+    const int ngroups = num_heads / num_heads_k;
+    if (seqlenq_ngroups_swapped) {
+        // NOTE(Corentin): Suppose q is already in the correct shape
+        //q = q.reshape({batch_size, num_heads_k, ngroups, head_size}).transpose(1, 2).reshape({batch_size * ngroups, num_heads_k, head_size});
+        max_seqlen_q = ngroups;
+        num_heads = num_heads_k;
+        cu_seqlens_q = nullptr;
+    }
 
     CAPI_CHECK(batch_size > 0, "batch size must be positive");
     CAPI_CHECK(head_size <= 256, "FlashAttention forward only supports head dimension at most 256");
@@ -282,21 +372,24 @@ void flashattn_batched_prefill_with_kvcache(
                      num_heads, num_heads_k,
                      head_size, head_size_rounded,
                      q, k, v, out,
+                     q_batch_stride,
                      q_row_stride,
                      q_head_stride,
+                     k_batch_stride,
                      k_row_stride,
                      k_head_stride,
+                     v_batch_stride,
                      v_row_stride,
                      v_head_stride,
+                     o_batch_stride,
                      o_row_stride,
                      o_head_stride,
                      q_dtype,
-
                      cu_seqlens_q,
                      cu_seqlens_k,
                      seqused_k,
                      nullptr,
-                     nullptr,
+                     softmax_lse,
                      0.0,
                      softmax_scale,
                      window_size_left,
@@ -313,13 +406,14 @@ void flashattn_batched_prefill_with_kvcache(
     params.page_block_size = page_block_size;
     // Keep references to these tensors to extend their lifetime
     //at::Tensor softmax_lse_accum, out_accum;
-    //if (seqlenq_ngroups_swapped) {
-    //    // Only apply split-k for decoding
-    //    std::tie(softmax_lse_accum, out_accum) =
-    //        set_params_splitkv(params, batch_size, num_heads, head_size,
-    //                           max_seqlen_k, max_seqlen_q, head_size_rounded,
-    //                           p_dropout, /*num_splits*/ 0, get_num_sm(get_current_device()), opts);
-    //}
+    if (seqlenq_ngroups_swapped) {
+        // Only apply split-k for decoding
+        set_params_splitkv(params, batch_size, num_heads, head_size,
+                               max_seqlen_k, max_seqlen_q, head_size_rounded,
+                               0.f, /*num_splits*/ 0, get_num_sm(get_current_device()), 
+                               softmax_lse_accum, softmax_lse_accum_size,
+                               out_accum, out_accum_size);
+    }
 
     //if (leftpad_k_.has_value()) {
     //    auto leftpad_k = leftpad_k_.value();
@@ -339,7 +433,6 @@ void flashattn_batched_prefill_with_kvcache(
     //auto rng_state = torch::empty({2}, options.dtype(torch::kInt64));
     // Forward kernel will populate memory with the seed and offset.
     //params.rng_state = reinterpret_cast<uint64_t*>(rng_state.data_ptr());
-    params.rng_state = static_cast<uint64_t*>(nullptr);
 
     //if (p_dropout > 0.0)  {
     //    auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
@@ -360,6 +453,7 @@ void flashattn_batched_prefill_with_kvcache(
     }
 
     if (seqlenq_ngroups_swapped) {
+        // NOTE(Corentin): We assume that out already has the correct shape
         //int64_t size_before[] = {batch_size, max_seqlen_q, num_heads_k, head_size};
         //int64_t size_after[] = {batch_size, num_heads_k * max_seqlen_q, head_size};
         //out = out.reshape(size_before).transpose(1, 2).reshape(size_after);
@@ -369,78 +463,61 @@ void flashattn_batched_prefill_with_kvcache(
 }
 
 }
-
-void flashattn_batched_prefill_with_kvcache(
-        void* q, // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
-        void* k, // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
-        void* v, // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
-        void* out, // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
-        void* cu_seqlens_q, // b+1
-        void* cu_seqlens_k, // b+1
-        void* seqused_k, // b. If given, only this many elements of each batch element's keys are used.
-        // leftpad_k_ (disabled because I don't know what it is lol)
-        void* block_table, // batch_size x max_num_blocks_per_seq
-        void* alibi_slopes_, // num_heads or b x num_heads
-        int max_seqlen_q,
-        const int max_seqlen_k,
-        const float softmax_scale,
-        bool is_causal,
-        int window_size_left,
-        int window_size_right,
-
-        int64_t q_row_stride,
-        int64_t q_head_stride,
-        int64_t k_row_stride,
-        int64_t k_head_stride,
-        int64_t v_row_stride,
-        int64_t v_head_stride,
-        int64_t o_row_stride,
-        int64_t o_head_stride,
-        int64_t block_table_batch_stride,
-        int64_t k_batch_stride,
-        int64_t v_batch_stride,
-        DataType q_dtype,
-        uint32_t total_q,
-        uint32_t batch_size,
-        uint32_t num_heads,
-        uint32_t num_heads_k,
-        uint32_t head_size,
-        uint32_t page_block_size,
+void flashattn_mha_varlen_fwd(
+        void* q,
+        void* k,
+        void* v,
+        void* out,
+        void* cu_seqlens_q,
+        void* cu_seqlens_k,
+        void* seqused_k,
+        void* block_table,
+        void* softmax_lse,
+        void* alibi_slopes_,
+        void* softmax_lse_accum,
+        void* out_accum,
+        FlashattnMhaVarlenFwdParams params,
         void* stream) {
-    FLASH_NAMESPACE::flashattn_batched_prefill_with_kvcache(
-        q, // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
-        k, // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
-        v, // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
-        out, // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
-        cu_seqlens_q, // b+1
-        cu_seqlens_k, // b+1
-        seqused_k, // b. If given, only this many elements of each batch element's keys are used.
-        block_table, // batch_size x max_num_blocks_per_seq
-        alibi_slopes_, // num_heads or b x num_heads
-        max_seqlen_q,
-        max_seqlen_k,
-        softmax_scale,
-        is_causal,
-        window_size_left,
-        window_size_right,
-
-        q_row_stride,
-        q_head_stride,
-        k_row_stride,
-        k_head_stride,
-        v_row_stride,
-        v_head_stride,
-        o_row_stride,
-        o_head_stride,
-        block_table_batch_stride,
-        k_batch_stride,
-        v_batch_stride,
-        q_dtype,
-        total_q,
-        batch_size,
-        num_heads,
-        num_heads_k,
-        head_size,
-        page_block_size,
+    FLASH_NAMESPACE::flashattn_mha_varlen_fwd(
+        q,
+        k,
+        v,
+        out,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        seqused_k,
+        block_table,
+        softmax_lse,
+        alibi_slopes_,
+        softmax_lse_accum,
+        out_accum,
+        params.q_dtype,
+        params.q_batch_stride,
+        params.q_row_stride,
+        params.q_head_stride,
+        params.k_batch_stride,
+        params.k_row_stride,
+        params.k_head_stride,
+        params.v_batch_stride,
+        params.v_row_stride,
+        params.v_head_stride,
+        params.o_batch_stride,
+        params.o_row_stride,
+        params.o_head_stride,
+        params.block_table_batch_stride,
+        params.softmax_lse_accum_size,
+        params.out_accum_size,
+        params.max_seqlen_q,
+        params.max_seqlen_k,
+        params.is_causal,
+        params.softmax_scale,
+        params.window_size_left,
+        params.window_size_right,
+        params.total_q,
+        params.batch_size,
+        params.num_heads,
+        params.num_heads_k,
+        params.head_size,
+        params.page_block_size,
         stream);
 }
