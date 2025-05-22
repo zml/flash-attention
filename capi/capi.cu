@@ -10,13 +10,7 @@
 #include "flash.h"
 #include "static_switch.h"
 
-#define CAPI_CHECK(cond, ...)                                                                 \
-    do {                                                                                      \
-        if (!(cond)) {                                                                        \
-            fprintf(stderr, "Check failed (%s:%d): %s\n", __FILE__, __LINE__, ##__VA_ARGS__); \
-            exit(1);                                                                          \
-        }                                                                                     \
-    } while(0)
+#include "fa_utils.h"
 
 namespace FLASH_NAMESPACE {
 
@@ -46,28 +40,15 @@ void set_params_fprop(Flash_fwd_params &params,
                       const size_t d,
                       const size_t d_rounded,
                       // device pointers
-                      void* q,
-                      void* k,
-                      void* v,
-                      void* out,
-                      int64_t q_batch_stride,
-                      int64_t q_row_stride,
-                      int64_t q_head_stride,
-                      int64_t k_batch_stride,
-                      int64_t k_row_stride,
-                      int64_t k_head_stride,
-                      int64_t v_batch_stride,
-                      int64_t v_row_stride,
-                      int64_t v_head_stride,
-                      int64_t o_batch_stride,
-                      int64_t o_row_stride,
-                      int64_t o_head_stride,
-                      DataType q_dtype,
-                      void *cu_seqlens_q_d,
-                      void *cu_seqlens_k_d,
-                      void *seqused_k,
-                      void *p_d,
-                      void *softmax_lse_d,
+                      FlashattnTensor q,
+                      FlashattnTensor k,
+                      FlashattnTensor v,
+                      FlashattnTensor out,
+                      FlashattnTensor cu_seqlens_q_d,
+                      FlashattnTensor cu_seqlens_k_d,
+                      FlashattnTensor seqused_k,
+                      FlashattnTensor p_d,
+                      FlashattnTensor softmax_lse_d,
                       float p_dropout,
                       float softmax_scale,
                       int window_size_left,
@@ -79,43 +60,43 @@ void set_params_fprop(Flash_fwd_params &params,
     // Reset the parameters
     params = {};
 
-    params.is_bf16 = q_dtype == CAPI_BFLOAT16;
+    params.is_bf16 = q.dtype == CAPI_BFLOAT16;
 
     // Set the pointers and strides.
-    params.q_ptr = q;
-    params.k_ptr = k;
-    params.v_ptr = v;
+    params.q_ptr = q.ptr;
+    params.k_ptr = k.ptr;
+    params.v_ptr = v.ptr;
     // All stride are in elements, not bytes.
-    params.q_row_stride = q_row_stride;
-    params.k_row_stride = k_row_stride;
-    params.v_row_stride = v_row_stride;
-    params.q_head_stride = q_head_stride;
-    params.k_head_stride = k_head_stride;
-    params.v_head_stride = v_head_stride;
-    params.o_ptr = out;
-    params.o_row_stride = o_row_stride;
-    params.o_head_stride = o_head_stride;
+    params.q_row_stride = getStride(q, -3);
+    params.k_row_stride = getStride(k, -3);
+    params.v_row_stride = getStride(v, -3);
+    params.q_head_stride = getStride(q, -2);
+    params.k_head_stride = getStride(k, -2);
+    params.v_head_stride = getStride(v, -2);
+    params.o_ptr = out.ptr;
+    params.o_row_stride = getStride(out, -3);
+    params.o_head_stride = getStride(out, -2);
 
-    if (cu_seqlens_q_d == nullptr) {
-        params.q_batch_stride = q_batch_stride;
-        params.k_batch_stride = k_batch_stride;
-        params.v_batch_stride = v_batch_stride;
-        params.o_batch_stride = o_batch_stride;
+    if (cu_seqlens_q_d.ptr == nullptr) {
+        params.q_batch_stride = getStride(q, 0);
+        params.k_batch_stride = getStride(k, 0);
+        params.v_batch_stride = getStride(v, 0);
+        params.o_batch_stride = getStride(out, 0);
         if (seqlenq_ngroups_swapped) {
              params.q_batch_stride *= seqlen_q;
              params.o_batch_stride *= seqlen_q;
         }
     }
 
-    params.cu_seqlens_q = static_cast<int *>(cu_seqlens_q_d);
-    params.cu_seqlens_k = static_cast<int *>(cu_seqlens_k_d);
-    params.seqused_k = static_cast<int *>(seqused_k);
+    params.cu_seqlens_q = static_cast<int *>(cu_seqlens_q_d.ptr);
+    params.cu_seqlens_k = static_cast<int *>(cu_seqlens_k_d.ptr);
+    params.seqused_k = static_cast<int *>(seqused_k.ptr);
 
     // P = softmax(QK^T)
-    params.p_ptr = p_d;
+    params.p_ptr = p_d.ptr;
 
     // Softmax sum
-    params.softmax_lse_ptr = softmax_lse_d;
+    params.softmax_lse_ptr = softmax_lse_d.ptr;
 
     // Set the dimensions.
     params.b = b;
@@ -216,8 +197,8 @@ void set_params_splitkv(Flash_fwd_params &params, const int batch_size,
     const int num_heads, const int head_size, const int max_seqlen_k, const int max_seqlen_q,
     const int head_size_rounded, const float p_dropout,
     const int num_splits, const int num_sm,
-    void* softmax_lse_accum, const int allocated_softmax_lse_accum_size, 
-    void* out_accum, const int allocated_out_accum_size) {
+    FlashattnTensor softmax_lse_accum, 
+    FlashattnTensor out_accum) {
 
     // This needs to match with run_mha_fwd_splitkv_dispatch
     const int block_n = head_size <= 64 ? 256 : (head_size <= 128 ? 128 : 64);
@@ -234,87 +215,84 @@ void set_params_splitkv(Flash_fwd_params &params, const int batch_size,
         }
         if (params.num_splits > 1) {
             const int float_byte_size = 4;
+            const int allocated_softmax_lse_accum_size = byteSize(softmax_lse_accum) / float_byte_size;
             const int softmax_lse_accum_size = params.num_splits * batch_size * num_heads * max_seqlen_q * float_byte_size;
             CAPI_CHECK(softmax_lse_accum_size <= allocated_softmax_lse_accum_size, "Tensor allocated for softmax lse accum must be big enough");
 
             const int out_accum_size = params.num_splits * batch_size * num_heads * max_seqlen_q * head_size_rounded * float_byte_size;
+            const int allocated_out_accum_size = byteSize(out_accum) / float_byte_size;
             CAPI_CHECK(out_accum_size <= allocated_out_accum_size, "Tensor allocated for out accum must be big enough");
 
             //softmax_lse_accum = torch::empty({params.num_splits, batch_size, num_heads, max_seqlen_q}, opts.dtype(at::kFloat));
             //out_accum = torch::empty({params.num_splits, batch_size, num_heads, max_seqlen_q, head_size_rounded}, opts.dtype(at::kFloat));
 
-            params.softmax_lseaccum_ptr = softmax_lse_accum;
-            params.oaccum_ptr = out_accum;
+            params.softmax_lseaccum_ptr = softmax_lse_accum.ptr;
+            params.oaccum_ptr = out_accum.ptr;
         }
         CAPI_CHECK(params.num_splits <= 128, "num_splits > 128 not supported");
     }
 }
 
 void flashattn_mha_varlen_fwd(
-        void* q, // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
-        void* k, // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
-        void* v, // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
-        void* out, // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
-        void* cu_seqlens_q, // b+1
-        void* cu_seqlens_k, // b+1
-        void* seqused_k, // b. If given, only this many elements of each batch element's keys are used.
-        // leftpad_k_ (disabled because I don't know what it is lol)
-        void* block_table, // batch_size x max_num_blocks_per_seq
-        void* softmax_lse, // num_heads x total_q
-        void* alibi_slopes_, // num_heads or b x num_heads
-        void* softmax_lse_accum,
-        void* out_accum,
-        DataType q_dtype,
-        int64_t q_batch_stride,
-        int64_t q_row_stride,
-        int64_t q_head_stride,
-        int64_t k_batch_stride,
-        int64_t k_row_stride,
-        int64_t k_head_stride,
-        int64_t v_batch_stride,
-        int64_t v_row_stride,
-        int64_t v_head_stride,
-        int64_t o_batch_stride,
-        int64_t o_row_stride,
-        int64_t o_head_stride,
-        int64_t block_table_batch_stride,
-        const int softmax_lse_accum_size,
-        const int out_accum_size,
+        FlashattnTensor q, // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
+        FlashattnTensor k, // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
+        FlashattnTensor v, // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
+        FlashattnTensor out, // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
+        FlashattnTensor cu_seqlens_q, // b+1
+        FlashattnTensor cu_seqlens_k, // b+1
+        FlashattnTensor seqused_k, // b. If given, only this many elements of each batch element's keys are used.
+        FlashattnTensor block_table, // batch_size x max_num_blocks_per_seq
+        FlashattnTensor softmax_lse, // num_heads x total_q
+        FlashattnTensor alibi_slopes_, // num_heads or b x num_heads
+        FlashattnTensor softmax_lse_accum,
+        FlashattnTensor out_accum,
         int max_seqlen_q,
         const int max_seqlen_k,
         bool is_causal,
         const float softmax_scale,
         int window_size_left,
         int window_size_right,
-        uint32_t total_q,
-        uint32_t batch_size,
-        uint32_t num_heads,
-        uint32_t num_heads_k,
-        uint32_t head_size,
-        uint32_t page_block_size,
+        int num_heads,
         void* stream) {
 
     auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
     bool is_sm8x_min = cc_major >= 8;
     CAPI_CHECK(is_sm8x_min, "FlashAttention only supports Ampere GPUs or newer.");
 
-    if (max_seqlen_q == 1 && alibi_slopes_ == nullptr) { is_causal = false; }  // causal=true is the same as causal=false in this case
-    if (is_causal) { window_size_right = 0; }
+    CAPI_CHECK(q.dtype == CAPI_FLOAT16 || q.dtype == CAPI_BFLOAT16,
+                "FlashAttention only support fp16 and bf16 data type");
+    CAPI_CHECK(k.dtype == q.dtype, "query and key must have the same dtype");
+    CAPI_CHECK(v.dtype == q.dtype, "query and value must have the same dtype");
+    CAPI_CHECK(cu_seqlens_q.ptr == nullptr || cu_seqlens_q.dtype == CAPI_INT32, "cu_seqlens_q must have dtype int32");
+    CAPI_CHECK(cu_seqlens_k.ptr == nullptr || cu_seqlens_k.dtype == CAPI_INT32, "cu_seqlens_k must have dtype int32");
 
     const bool paged_KV = true;
 
-    // TODO(Corentin):
+    const int batch_size = getDim(block_table, 0);
+    int head_size = getDim(q, 2);
+    const int num_heads_k = getDim(k, 2);
+
+    const int max_num_blocks_per_seq = getDim(block_table, 1);
+    const int num_blocks = getDim(k, 0);
+    const int page_block_size = getDim(k, 1);
+    CAPI_CHECK(page_block_size % 16 == 0, "Paged KV cache block size must be divisible by 16");
+
+    if (max_seqlen_q == 1 && alibi_slopes_.ptr == nullptr) { is_causal = false; }  // causal=true is the same as causal=false in this case
+    if (is_causal) { window_size_right = 0; }
+
     // Faster to transpose q from (b, 1, (nheads_kv ngroups), d) to (b, ngroups, nheads_kv, d) in this case
     // H/t Daniel Haziza
-    const int seqlenq_ngroups_swapped = max_seqlen_q == 1 && num_heads > num_heads_k && window_size_left < 0 && window_size_right < 0 && head_size % 8 == 0 && alibi_slopes_ == nullptr;
+    const int seqlenq_ngroups_swapped = max_seqlen_q == 1 && num_heads > num_heads_k && window_size_left < 0 && window_size_right < 0 && head_size % 8 == 0 && alibi_slopes_.ptr == nullptr;
     const int ngroups = num_heads / num_heads_k;
     if (seqlenq_ngroups_swapped) {
         // NOTE(Corentin): Suppose q is already in the correct shape
         //q = q.reshape({batch_size, num_heads_k, ngroups, head_size}).transpose(1, 2).reshape({batch_size * ngroups, num_heads_k, head_size});
         max_seqlen_q = ngroups;
         num_heads = num_heads_k;
-        cu_seqlens_q = nullptr;
+        cu_seqlens_q.ptr = nullptr;
     }
+
+    const int total_q = getDim(q, 0);
 
     CAPI_CHECK(batch_size > 0, "batch size must be positive");
     CAPI_CHECK(head_size <= 256, "FlashAttention forward only supports head dimension at most 256");
@@ -372,23 +350,10 @@ void flashattn_mha_varlen_fwd(
                      num_heads, num_heads_k,
                      head_size, head_size_rounded,
                      q, k, v, out,
-                     q_batch_stride,
-                     q_row_stride,
-                     q_head_stride,
-                     k_batch_stride,
-                     k_row_stride,
-                     k_head_stride,
-                     v_batch_stride,
-                     v_row_stride,
-                     v_head_stride,
-                     o_batch_stride,
-                     o_row_stride,
-                     o_head_stride,
-                     q_dtype,
                      cu_seqlens_q,
                      cu_seqlens_k,
                      seqused_k,
-                     nullptr,
+                     FlashattnTensor{},
                      softmax_lse,
                      0.0,
                      softmax_scale,
@@ -399,10 +364,10 @@ void flashattn_mha_varlen_fwd(
                      /*unpadded_lse*/true);
     params.total_q = total_q;
 
-    params.block_table = static_cast<int*>(block_table);
-    params.block_table_batch_stride = block_table_batch_stride;
-    params.k_batch_stride = k_batch_stride;
-    params.v_batch_stride = v_batch_stride;
+    params.block_table = static_cast<int*>(block_table.ptr);
+    params.block_table_batch_stride = getStride(block_table, 0);
+    params.k_batch_stride = getStride(k, 0);
+    params.v_batch_stride = getStride(v, 0);
     params.page_block_size = page_block_size;
     // Keep references to these tensors to extend their lifetime
     //at::Tensor softmax_lse_accum, out_accum;
@@ -411,8 +376,8 @@ void flashattn_mha_varlen_fwd(
         set_params_splitkv(params, batch_size, num_heads, head_size,
                                max_seqlen_k, max_seqlen_q, head_size_rounded,
                                0.f, /*num_splits*/ 0, get_num_sm(get_current_device()), 
-                               softmax_lse_accum, softmax_lse_accum_size,
-                               out_accum, out_accum_size);
+                               softmax_lse_accum,
+                               out_accum);
     }
 
     //if (leftpad_k_.has_value()) {
@@ -463,20 +428,20 @@ void flashattn_mha_varlen_fwd(
 }
 
 }
-void flashattn_mha_varlen_fwd(
-        void* q,
-        void* k,
-        void* v,
-        void* out,
-        void* cu_seqlens_q,
-        void* cu_seqlens_k,
-        void* seqused_k,
-        void* block_table,
-        void* softmax_lse,
-        void* alibi_slopes_,
-        void* softmax_lse_accum,
-        void* out_accum,
-        FlashattnMhaVarlenFwdParams params,
+void fa2_mha_varlen_fwd(
+        FlashattnTensor q,
+        FlashattnTensor k,
+        FlashattnTensor v,
+        FlashattnTensor out,
+        FlashattnTensor cu_seqlens_q,
+        FlashattnTensor cu_seqlens_k,
+        FlashattnTensor seqused_k,
+        FlashattnTensor block_table,
+        FlashattnTensor softmax_lse,
+        FlashattnTensor alibi_slopes_,
+        FlashattnTensor softmax_lse_accum,
+        FlashattnTensor out_accum,
+        FA2MhaVarlenFwdParams params,
         void* stream) {
     FLASH_NAMESPACE::flashattn_mha_varlen_fwd(
         q,
@@ -491,33 +456,12 @@ void flashattn_mha_varlen_fwd(
         alibi_slopes_,
         softmax_lse_accum,
         out_accum,
-        params.q_dtype,
-        params.q_batch_stride,
-        params.q_row_stride,
-        params.q_head_stride,
-        params.k_batch_stride,
-        params.k_row_stride,
-        params.k_head_stride,
-        params.v_batch_stride,
-        params.v_row_stride,
-        params.v_head_stride,
-        params.o_batch_stride,
-        params.o_row_stride,
-        params.o_head_stride,
-        params.block_table_batch_stride,
-        params.softmax_lse_accum_size,
-        params.out_accum_size,
         params.max_seqlen_q,
         params.max_seqlen_k,
         params.is_causal,
         params.softmax_scale,
         params.window_size_left,
         params.window_size_right,
-        params.total_q,
-        params.batch_size,
         params.num_heads,
-        params.num_heads_k,
-        params.head_size,
-        params.page_block_size,
         stream);
 }
