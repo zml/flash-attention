@@ -63,7 +63,7 @@ cuda_library(
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",
         "--use_fast_math",    
-        #"-G",
+        #"--generate-line-info",
     ],
     srcs = [
         #"csrc/flash_attn/flash_api.cpp",
@@ -151,11 +151,16 @@ cuda_library(
 )
 
 cuda_library(
+    name = "capi-hdrs",
+    hdrs = ["capi/capi.h", "capi/fa_utils.h"],
+    copts = [],
+)
+
+cuda_library(
     name = "capi",
-    hdrs = ["capi/capi.h"],
     srcs = ["capi/capi.cu"],
     copts = [],
-    deps = [":flashattn"],
+    deps = [":flashattn", ":capi-hdrs"],
     alwayslink = True,
 )
 
@@ -170,11 +175,17 @@ cuda_library(
     includes = ["hopper/"],
 )
 
+cc_library(
+    name = "flashattn-sm90-support-files",
+    textual_hdrs = glob(["hopper/instantiations/*.cu"]),
+)
+
 cuda_library(
     name = "flashattn-sm90",
     defines = [],
     deps = [
         "//:flashattn-sm90-headers",
+        "//:flashattn-sm90-support-files",
         "//:cute",
         "//:cutlass",
         "//:c10_stub",
@@ -188,16 +199,33 @@ cuda_library(
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",
         "--use_fast_math",
+        #"--generate-line-info",
     ],
     srcs = [
-        "hopper/instantiations/flash_fwd_hdim128_bf16_paged_sm90.cu",
         "hopper/flash_prepare_scheduler.cu",
-    ],
+        "hopper/flash_fwd_combine.cu",
+    ] 
+    + glob(["hopper/instantiations/flash_fwd_hdimall_bf16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdimdiff_bf16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_*_bf16_*_sm80.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdimall_fp16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdimdiff_fp16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_*_fp16_*_sm80.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdimall_e4m3*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdimdiff_e4m3*_sm90.cu"]),
+)
+
+cuda_library(
+    name = "capi-sm90",
+    srcs = ["capi/capi_sm90.cu"],
+    copts = [],
+    deps = [":flashattn-sm90", ":capi-hdrs"],
+    alwayslink = True,
 )
 
 cc_shared_library(
     name = "flashattn_sm90_so",
-    deps = [":flashattn-sm90"],
+    deps = [":capi-sm90"],
 )
 
 #cuda_library(
