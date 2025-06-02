@@ -726,7 +726,10 @@ mha_fwd(FlashattnTensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu
         int metadata_size = int(scheduler_needs_semaphore) + int(use_dynamic_split) * params.b;
         //params.skip_scheduler_metadata_computation = scheduler_metadata_.has_value();
         params.skip_scheduler_metadata_computation = false;
-        CAPI_CHECK(numElements(scheduler_metadata_) == metadata_size, "scheduler_metadata_ should have the correct size");
+        if (numElements(scheduler_metadata_) != metadata_size) {
+            fprintf(stderr, "scheduler_metadata_ requires %d bytes, allocated %ld bytes\n", metadata_size, numElements(scheduler_metadata_));
+            CAPI_CHECK(false, "");
+        }
         CAPI_CHECK(scheduler_metadata_.dtype == CAPI_INT32, "scheduler_metadata_ dtype should be int32");
         //if (scheduler_metadata_.has_value()) {
         //    at::Tensor scheduler_metadata = scheduler_metadata_.value();
@@ -825,15 +828,19 @@ mha_fwd(FlashattnTensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu
         params.oaccum_ptr = out_accum.ptr;
         params.softmax_lseaccum_ptr = softmax_lse_accum.ptr;
         
-        const int float_size = 4;
-        const int out_accum_size = params.num_splits * num_heads * total_q * head_size_v * float_size;
-        const int allocated_out_accum_size = byteSize(out_accum);
-        //printf("out_accum requires %d bytes, allocated %d bytes\n", out_accum_size, allocated_out_accum_size);
-        CAPI_CHECK(out_accum_size <= allocated_out_accum_size, "out_accum should be big enough");
-        const int softmax_lse_accum_size = params.num_splits * num_heads * total_q * float_size;
-        const int allocated_softmax_lse_accum_size = byteSize(softmax_lse_accum);
-        //printf("softmax_lse_accum requires %d bytes, allocated %d bytes\n", softmax_lse_accum_size, allocated_softmax_lse_accum_size);
-        CAPI_CHECK(softmax_lse_accum_size <= allocated_softmax_lse_accum_size, "softmax_lse_accum should be big enough");
+        const int64_t float_size = 4;
+        const int64_t out_accum_size = (int64_t)params.num_splits * (int64_t)num_heads * (int64_t)total_q * (int64_t)head_size_v * (int64_t)float_size;
+        const int64_t allocated_out_accum_size = byteSize(out_accum);
+        if (out_accum_size > allocated_out_accum_size) {
+            fprintf(stderr, "out_accum requires %ld bytes, allocated %ld bytes\n", out_accum_size, allocated_out_accum_size);
+            CAPI_CHECK(false, "");
+        }
+        const int64_t softmax_lse_accum_size = (int64_t)params.num_splits * (int64_t)num_heads * (int64_t)total_q * (int64_t)float_size;
+        const int64_t allocated_softmax_lse_accum_size = byteSize(softmax_lse_accum);
+        if (softmax_lse_accum_size > allocated_softmax_lse_accum_size) {
+            fprintf(stderr, "softmax_lse_accum requires %ld bytes, allocated %ld bytes\n", softmax_lse_accum_size, allocated_softmax_lse_accum_size);
+            CAPI_CHECK(false, "");
+        }
 
 
         params.oaccum_split_stride = num_heads * total_q * head_size_v;
@@ -984,17 +991,6 @@ void fa3_mha_fwd(FlashattnTensor q,
         FlashattnTensor scheduler_metadata,
         FA3MhaFwdParams params,
         void* stream) {
-    //printTensor(q, "q");
-    //printTensor(k, "k");
-    //printTensor(v, "v");
-    //printTensor(out, "out");
-    //printTensor(cu_seqlens_q, "cu_seqlens_q");
-    //printTensor(seqused_k, "seqused_k");
-    //printTensor(page_table, "page_table");
-    //printTensor(softmax_lse, "softmax_lse");
-    //printTensor(softmax_lse_accum, "softmax_lse_accum");
-    //printTensor(out_accum, "out_accum");
-    //printTensor(scheduler_metadata, "scheduler_metadata");
     FLASH_NAMESPACE::mha_fwd(
         q,
         k,
