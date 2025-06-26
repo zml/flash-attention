@@ -56,6 +56,9 @@ cuda_library(
     ],
     copts = [
         "-DENABLE_FP8",
+        "-DFLASHATTENTION_DISABLE_BACKWARD",
+        "-DFLASHATTENTION_DISABLE_DROPOUT",
+        "-DFLASHATTENTION_DISABLE_UNEVEN_K",
         "-U__CUDA_NO_HALF_OPERATORS__",
         "-U__CUDA_NO_HALF_CONVERSIONS__",
         "-U__CUDA_NO_HALF2_OPERATORS__",
@@ -161,6 +164,10 @@ cuda_library(
         "//:ATen_stub",
     ],
     copts = [
+        "-DFLASHATTENTION_DISABLE_BACKWARD",
+        "-DFLASHATTENTION_DISABLE_DROPOUT",
+        "-DFLASHATTENTION_DISABLE_UNEVEN_K",
+        "-DFLASHATTENTION_VARLEN_ONLY",
         "-U__CUDA_NO_HALF_OPERATORS__",
         "-U__CUDA_NO_HALF_CONVERSIONS__",
         "-U__CUDA_NO_HALF2_OPERATORS__",
