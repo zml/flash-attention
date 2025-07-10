@@ -65,7 +65,8 @@ cuda_library(
         "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",
-        "--use_fast_math",    
+        "--use_fast_math",
+        "--compress-mode=size",
     ],
     srcs = [
         "csrc/flash_attn/src/flash_fwd_hdim32_fp16_sm80.cu",
@@ -175,6 +176,7 @@ cuda_library(
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",
         "--use_fast_math",
+        "--compress-mode=size",
     ],
     srcs = [
         "hopper/flash_prepare_scheduler.cu",
