@@ -186,8 +186,8 @@
     },
     "@@rules_cuda+//cuda:extensions.bzl%toolchain": {
       "general": {
-        "bzlTransitiveDigest": "tFU9e/l1UUtQpTbqF0JDhHNADUkN+zQvvaOj+28gSo4=",
-        "usagesDigest": "kIJQZ43Z8llD5k1kFsVEYF8E5yKBgHTDWo2DeXiB2jw=",
+        "bzlTransitiveDigest": "AbQKwsGYArxNqqtN2/6IUZjChKKlQezeahEsQDAlbIU=",
+        "usagesDigest": "F23xPWjzlsa0fTVUzz3acjxghaxorxhqsj0FDAcRUIE=",
         "recordedFileInputs": {},
         "recordedDirentsInputs": {},
         "envVariables": {},
@@ -197,7 +197,7 @@
             "attributes": {
               "components_mapping": {},
               "nvcc_version": "",
-              "toolkit_path": "/usr/local/cuda-12.8",
+              "toolkit_path": "/usr/local/cuda-13.1",
               "version": ""
             }
           }
@@ -205,6 +205,16 @@
         "recordedRepoMappingEntries": [
           [
             "bazel_tools",
+            "rules_cc",
+            "rules_cc+"
+          ],
+          [
+            "rules_cc+",
+            "bazel_tools",
+            "bazel_tools"
+          ],
+          [
+            "rules_cc+",
             "rules_cc",
             "rules_cc+"
           ],
