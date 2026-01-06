@@ -253,6 +253,7 @@ void flashattn_mha_varlen_fwd(
         int window_size_left,
         int window_size_right,
         int num_heads,
+        int num_splits,
         void* stream) {
 
     auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
@@ -375,7 +376,7 @@ void flashattn_mha_varlen_fwd(
         // Only apply split-k for decoding
         set_params_splitkv(params, batch_size, num_heads, head_size,
                                max_seqlen_k, max_seqlen_q, head_size_rounded,
-                               0.f, /*num_splits*/ 0, get_num_sm(get_current_device()), 
+                               0.f, num_splits, get_num_sm(get_current_device()), 
                                softmax_lse_accum,
                                out_accum);
     }
@@ -463,5 +464,6 @@ void fa2_mha_varlen_fwd(
         params.window_size_left,
         params.window_size_right,
         params.num_heads,
+        params.num_splits,
         stream);
 }

@@ -27,6 +27,7 @@ typedef struct FA2MhaVarlenFwdParams {
     int window_size_right;
 
     int num_heads;
+    int num_splits;
 } FA2MhaVarlenFwdParams;
 
 typedef struct FA3MhaFwdParams {
@@ -43,6 +44,9 @@ typedef struct FA3MhaFwdParams {
 
     int window_size_left;
     int window_size_right;
+
+    int cp_world_size;
+    int cp_rank;
 } FA3MhaFwdParams;
 
 typedef struct FlashattnTensor {
@@ -80,6 +84,8 @@ void fa3_mha_fwd(FlashattnTensor q,
         FlashattnTensor softmax_lse_accum,
         FlashattnTensor out_accum,
         FlashattnTensor scheduler_metadata,
+        FlashattnTensor s_aux,
+        FlashattnTensor cp_tot_seqused_k,
         FA3MhaFwdParams params,
         void* stream);
 

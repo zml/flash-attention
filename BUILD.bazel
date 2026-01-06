@@ -1,4 +1,10 @@
 load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+load("//:cuda_archs_loose_intersection_test.bzl", "cuda_test_suite")
+load("//:cuda_archs_loose_intersection.bzl", "cuda_archs_loose_intersection")
+
+cuda_test_suite(
+    name = "cuda_tests",
+)
 
 cuda_library(
     name = "cute",
@@ -68,6 +74,7 @@ cuda_library(
         "--use_fast_math",
         "--compress-mode=size",
     ],
+    archs = cuda_archs_loose_intersection(["8.0+PTX"], ["8.0", "8.6", "8.9", "9.0", "10.0", "10.1", "11.0", "12.0"]),
     srcs = [
         "csrc/flash_attn/src/flash_fwd_hdim32_fp16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim32_bf16_sm80.cu",
@@ -178,18 +185,33 @@ cuda_library(
         "--use_fast_math",
         "--compress-mode=size",
     ],
+    archs = cuda_archs_loose_intersection(["9.0a"], ["8.0", "8.6", "8.9", "9.0", "10.0", "10.1", "11.0", "12.0"]),
     srcs = [
         "hopper/flash_prepare_scheduler.cu",
         "hopper/flash_fwd_combine.cu",
     ] 
-    + glob(["hopper/instantiations/flash_fwd_hdimall_bf16*_sm90.cu"])
-    + glob(["hopper/instantiations/flash_fwd_hdimdiff_bf16*_sm90.cu"])
-    + glob(["hopper/instantiations/flash_fwd_*_bf16_*_sm80.cu"])
-    + glob(["hopper/instantiations/flash_fwd_hdimall_fp16*_sm90.cu"])
-    + glob(["hopper/instantiations/flash_fwd_hdimdiff_fp16*_sm90.cu"])
-    + glob(["hopper/instantiations/flash_fwd_*_fp16_*_sm80.cu"])
-    + glob(["hopper/instantiations/flash_fwd_hdimall_e4m3*_sm90.cu"])
-    + glob(["hopper/instantiations/flash_fwd_hdimdiff_e4m3*_sm90.cu"]),
+    + glob(["hopper/instantiations/flash_fwd_hdim64_bf16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim96_bf16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim128_bf16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim192_bf16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim256_bf16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim64_256_bf16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim64_512_bf16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim192_128_bf16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim64_fp16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim96_fp16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim128_fp16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim192_fp16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim256_fp16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim64_256_fp16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim64_512_fp16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim192_128_fp16*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim64_e4m3*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim96_e4m3*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim128_e4m3*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim192_e4m3*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim256_e4m3*_sm90.cu"])
+    + glob(["hopper/instantiations/flash_fwd_hdim129_128_e4m3*_sm90.cu"])
 )
 
 cuda_library(

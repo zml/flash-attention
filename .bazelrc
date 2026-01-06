@@ -54,7 +54,6 @@ test            --test_output=errors
 
 common          --incompatible_disallow_empty_glob=false
 
-build           --@rules_cuda//cuda:archs=sm_80;sm_90a
 build           --@rules_cuda//cuda:enable=True
 
 common          --repo_env=CC=clang-18

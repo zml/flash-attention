@@ -278,9 +278,10 @@ void run_mha_fwd_combine(Flash_fwd_params &params, cudaStream_t stream, bool ena
 }
 
 inline bool get_pagedkv_tma(Flash_fwd_params const& params) {
-    if (params.arch < 90 || !params.page_table || params.leftpad_k || params.knew_ptr) { return false; }
+    // disable for local since we move k_ptr to start of sliding window by m_block
+    if (params.arch < 90 || !params.page_table || params.leftpad_k || params.knew_ptr || params.is_local) { return false; }
     // This needs to match the kernel configs
-    auto kBlockMN_kernel_args_sm90 = tile_size_fwd_sm90(params.d_rounded, params.dv_rounded, params.is_causal, params.is_local, params.is_e4m3 ? 1 : 2 /*element_size*/, false /*v_colmajor*/, false /*paged_kv_non_TMA*/, params.softcap > 0.f);
+    auto kBlockMN_kernel_args_sm90 = tile_size_fwd_sm90(params.d_rounded, params.dv_rounded, params.is_causal, params.is_local, params.is_e4m3 ? 1 : 2 /*element_size*/, false /*v_colmajor*/, false /*paged_kv_non_TMA*/, params.softcap > 0.f, use_one_mma_wg(params));
     int const kBlockM = std::get<0>(kBlockMN_kernel_args_sm90);
     int const kBlockN = std::get<1>(kBlockMN_kernel_args_sm90);
     // Heuristic: when seqlen_q <= kBlockM, we're not compute bound, and somehow using TMA is slower,
@@ -292,13 +293,19 @@ inline bool get_pack_gqa(Flash_fwd_params const& params) {
     // Always enable PackGQA for Sm8x or PagedKVNonTMA or Split to reduce compilation and binary size.
     // Has little effect on speed.
     if (params.arch < 90 || (params.page_table && !params.pagedkv_tma) || params.num_splits > 1) { return true; }
+    // Always enable PackGQA for special case of hdim = 64, qheads/kvheads = 8, local attention
+    // TODO: investigate more cases where PackGQA improves perf due to better tile quantization
+    bool const packgqa_override = params.arch >= 90 && (params.h / params.h_k) == 8 && 
+                                  params.is_local && 
+                                  params.d == 64 && (params.dv == params.d);
+    if (packgqa_override) { return true; }
     #ifdef FLASHATTENTION_DISABLE_PACKGQA
     return false;
     #else
     // params.page_table must already be set
     if (params.h == params.h_k) { return false; }
     // This needs to match the kernel configs
-    auto kBlockMN_kernel_args_sm90 = tile_size_fwd_sm90(params.d_rounded, params.dv_rounded, params.is_causal, params.is_local, params.is_e4m3 ? 1 : 2 /*element_size*/, false /*v_colmajor*/, params.page_table && !params.pagedkv_tma, params.softcap > 0.f);
+    auto kBlockMN_kernel_args_sm90 = tile_size_fwd_sm90(params.d_rounded, params.dv_rounded, params.is_causal, params.is_local, params.is_e4m3 ? 1 : 2 /*element_size*/, false /*v_colmajor*/, params.page_table && !params.pagedkv_tma, params.softcap > 0.f, use_one_mma_wg(params));
     int const kBlockM = std::get<0>(kBlockMN_kernel_args_sm90);
     return should_pack_gqa(params.cu_seqlens_q || params.seqused_q, params.seqlen_q, params.h / params.h_k, kBlockM);
     #endif
@@ -428,6 +435,10 @@ mha_fwd(FlashattnTensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu
         int num_splits,
         //std::optional<bool> pack_gqa_,
         int const sm_margin,
+        FlashattnTensor s_aux, // (h)
+        int const cp_world_size, // context parallelism (cp) world size
+        int const cp_rank, // cp rank
+        FlashattnTensor cp_tot_seqused_k, // (b) total seqused_k in cp world
         void* stream) {
     cudaDeviceProp dprops = getCurrentDeviceProperties();
     bool is_sm8x = dprops.major >= 8;
@@ -703,7 +714,7 @@ mha_fwd(FlashattnTensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu
     //}
 
     // 992 = 32 * 31 is the max supported batch in prepare_varlen_num_blocks kernel
-    bool const use_dynamic_split = is_varlen && params.b <= 992;
+    bool const use_dynamic_split = is_varlen && params.b <= 992 && num_splits != 1;
     // Temporarily set num_splits_dynamic_ptr to 1 since get_num_splits checks it
     params.num_splits_dynamic_ptr = !use_dynamic_split ? nullptr : reinterpret_cast<int*>(1);
 
@@ -713,7 +724,7 @@ mha_fwd(FlashattnTensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu
     params.pack_gqa = get_pack_gqa(params);
     params.num_splits = num_splits <= 0 ? get_num_splits(params) : num_splits;
     // Always enable PackGQA for Split
-    params.pack_gqa = params.num_splits > 1;
+    params.pack_gqa |= params.num_splits > 1;
 
     // This needs to be set after get_num_splits
     //at::Tensor tile_count_semaphore;  // Contains the semaphore and optionally num_splits_dynamic
@@ -882,6 +893,47 @@ mha_fwd(FlashattnTensor q,   // (b, s_q, h, d) or (total_q, h, d) if there is cu
     //        params.v_descale_ptr = nullptr;
     //    }
     //}
+    
+    //if(s_aux_.has_value()) {
+    //    TORCH_CHECK(params.arch == 90, "S aux is currently only supported for Hopper GPUs");
+    //    TORCH_CHECK(num_heads <= 64, "We only support query heads <= 64 with S aux");
+    //    TORCH_CHECK(head_size == head_size_v, "We don't support S aux with hdim != hdim_v");
+    //    auto s_aux = s_aux_.value();
+    //    TORCH_CHECK(s_aux.scalar_type() == at::ScalarType::BFloat16,
+    //        "We only support bf16 dtype for S aux.");
+    //    CHECK_DEVICE(s_aux);
+    //    CHECK_SHAPE(s_aux, num_heads);
+    //    CHECK_CONTIGUOUS(s_aux);
+    //    params.s_aux_ptr = s_aux.data_ptr();
+    //} else {
+    //    params.s_aux_ptr = nullptr;
+    //}
+
+    if (s_aux.ptr != nullptr) {
+        CAPI_CHECK(params.arch == 90, "S aux is currently only supported for Hopper GPUs");
+        CAPI_CHECK(num_heads <= 64, "We only support query heads <= 64 with S aux");
+        CAPI_CHECK(head_size == head_size_v, "We don't support S aux with hdim != hdim_v");
+        CAPI_CHECK(s_aux.dtype == CAPI_BFLOAT16, "We only support bf16 dtype for S aux.");
+        params.s_aux_ptr = s_aux.ptr;
+    } else {
+        params.s_aux_ptr = nullptr;
+    }
+
+    params.cp_world_size = cp_world_size;
+    params.cp_rank = cp_rank;
+    if (cp_tot_seqused_k.ptr != nullptr) {
+        params.cp_tot_seqused_k = reinterpret_cast<int*>(cp_tot_seqused_k.ptr);
+    } else {
+        params.cp_tot_seqused_k = nullptr;
+    }
+    CAPI_CHECK(cp_world_size > 0, "cp_world_size must be positive, required by downstream unified code path. Use 1 if CP is not enabled.");
+    CAPI_CHECK(cp_world_size != 1 || cp_rank == 0, "When context parallelism is disabled, cp_rank must be zero");
+    CAPI_CHECK(cp_world_size == 1 || cp_tot_seqused_k.ptr != nullptr, "cp_tot_seqused_k_ must be provided when context parallelism is enabled.");
+    CAPI_CHECK(!(params.is_local && cp_world_size > 1), 
+        "Local attention (sliding window) is not currently supported with context parallelism (cp_world_size > 1)."
+        "Requires proper n_offset handling in block boundary calculations in mainloop and block.h");
+
+
 
     //#ifdef FLASHATTENTION_DISABLE_LOCAL
     //TORCH_CHECK(!params.is_local, "This flash attention build does not support local attention.");
@@ -989,6 +1041,8 @@ void fa3_mha_fwd(FlashattnTensor q,
         FlashattnTensor softmax_lse_accum,
         FlashattnTensor out_accum,
         FlashattnTensor scheduler_metadata,
+        FlashattnTensor s_aux,
+        FlashattnTensor cp_tot_seqused_k,
         FA3MhaFwdParams params,
         void* stream) {
     FLASH_NAMESPACE::mha_fwd(
@@ -1013,6 +1067,10 @@ void fa3_mha_fwd(FlashattnTensor q,
         scheduler_metadata,
         params.num_splits,
         params.sm_margin,
+        s_aux,
+        params.cp_world_size,
+        params.cp_rank,
+        cp_tot_seqused_k,
         stream
     );
 }
