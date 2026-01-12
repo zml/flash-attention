@@ -30,6 +30,14 @@ typedef struct FA2MhaVarlenFwdParams {
     int num_splits;
 } FA2MhaVarlenFwdParams;
 
+typedef struct FA2MhaFwdParams {
+    bool is_causal;
+    float softmax_scale;
+
+    int window_size_left;
+    int window_size_right;
+} FA2MhaFwdParams;
+
 typedef struct FA3MhaFwdParams {
     int max_seqlen_q;
     int max_seqlen_k;
@@ -56,6 +64,18 @@ typedef struct FlashattnTensor {
     void *ptr;
     DataType dtype;
 } FlashattnTensor;
+
+void fa2_mha_fwd(
+        FlashattnTensor q, // batch_size x seqlen_q x num_heads x round_multiple(head_size, 8)
+        FlashattnTensor k, // batch_size x seqlen_k x num_heads_k x round_multiple(head_size, 8)
+        FlashattnTensor v, // batch_size x seqlen_k x num_heads_k x round_multiple(head_size, 8)
+        FlashattnTensor out, // batch_size x seqlen_q x num_heads x round_multiple(head_size, 8)
+        FlashattnTensor softmax_lse, // batch_size x num_heads x seqlen_q
+        FlashattnTensor alibi_slopes_, // num_heads or batch_size x num_heads
+        FlashattnTensor softmax_lse_accum,
+        FlashattnTensor out_accum,
+        FA2MhaFwdParams params,
+        void* stream);
 
 void fa2_mha_varlen_fwd(
         FlashattnTensor q, // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i

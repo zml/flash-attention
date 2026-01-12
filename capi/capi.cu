@@ -233,6 +233,159 @@ void set_params_splitkv(Flash_fwd_params &params, const int batch_size,
     }
 }
 
+void
+flashattn_mha_fwd(FlashattnTensor q,         // batch_size x seqlen_q x num_heads x round_multiple(head_size, 8)
+        FlashattnTensor k,         // batch_size x seqlen_k x num_heads_k x round_multiple(head_size, 8)
+        FlashattnTensor v,         // batch_size x seqlen_k x num_heads_k x round_multiple(head_size, 8)
+        FlashattnTensor out,             // batch_size x seqlen_q x num_heads x round_multiple(head_size, 8)
+        FlashattnTensor softmax_lse,
+        FlashattnTensor alibi_slopes, // num_heads or batch_size x num_heads
+        FlashattnTensor softmax_lse_accum,
+        FlashattnTensor out_accum,
+        const float softmax_scale,
+        bool is_causal,
+        int window_size_left,
+        int window_size_right,
+        void* stream) {
+    auto [cc_major, cc_minor] = get_compute_capability(get_current_device());
+    bool is_sm8x_min = cc_major >= 8;
+    CAPI_CHECK(is_sm8x_min, "FlashAttention only supports Ampere GPUs or newer.");
+
+    CAPI_CHECK(q.dtype == CAPI_FLOAT16 || q.dtype == CAPI_BFLOAT16,
+                "FlashAttention only support fp16 and bf16 data type");
+    CAPI_CHECK(k.dtype == q.dtype, "query and key must have the same dtype");
+    CAPI_CHECK(v.dtype == q.dtype, "query and value must have the same dtype");
+
+    const int batch_size = getDim(q, 0);
+    int seqlen_q = getDim(q, 1);
+    int num_heads = getDim(q, 2);
+    const int head_size = getDim(q, 3);
+    const int seqlen_k = getDim(k, 1);
+    const int num_heads_k = getDim(k, 2);
+    CAPI_CHECK(batch_size > 0, "batch size must be positive");
+    CAPI_CHECK(head_size <= 256, "FlashAttention forward only supports head dimension at most 256");
+    CAPI_CHECK(head_size % 8 == 0, "query, key, value, and out must have a head_size that is a multiple of 8");
+    CAPI_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
+
+    //if (softcap > 0.f) { CAPI_CHECK(p_dropout == 0.f, "Softcapping does not support dropout for now"); }
+
+    if (window_size_left >= seqlen_k) { window_size_left = -1; }
+    if (window_size_right >= seqlen_k) { window_size_right = -1; }
+
+    // causal=true is the same as causal=false in this case
+    if (seqlen_q == 1 && alibi_slopes.ptr == nullptr) { is_causal = false; }
+    if (is_causal) { window_size_right = 0; }
+
+    // Faster to transpose q from (b, 1, (nheads_kv ngroups), d) to (b, ngroups, nheads_kv, d) in this case
+    // H/t Daniel Haziza
+    const int seqlenq_ngroups_swapped = seqlen_q == 1 && num_heads > num_heads_k && window_size_left < 0 && window_size_right < 0 && head_size % 8 == 0 && alibi_slopes.ptr == nullptr;
+    const int ngroups = num_heads / num_heads_k;
+    if (seqlenq_ngroups_swapped) {
+        // NOTE(Corentin): Suppose q is already in the correct shape
+        //q = q.reshape({batch_size, num_heads_k, ngroups, head_size}).transpose(1, 2);
+        seqlen_q = ngroups;
+        num_heads = num_heads_k;
+    }
+
+    //CHECK_SHAPE(q, batch_size, seqlen_q, num_heads, head_size);
+    //CHECK_SHAPE(k, batch_size, seqlen_k, num_heads_k, head_size);
+    //CHECK_SHAPE(v, batch_size, seqlen_k, num_heads_k, head_size);
+
+    //at::Tensor out;
+    //if (out_.has_value()) {
+    //    out = out_.value();
+    //    CAPI_CHECK(out.dtype() == q_dtype, "Output must have the same dtype as inputs");
+    //    CHECK_DEVICE(out);
+    //    CAPI_CHECK(out.stride(-1) == 1, "Output tensor must have contiguous last dimension");
+    //    CHECK_SHAPE(out, batch_size, sizes[1], sizes[2], head_size);
+    //    if (seqlenq_ngroups_swapped) {
+    //        out = out.reshape({batch_size, num_heads_k, ngroups, head_size}).transpose(1, 2);
+    //    }
+    //} else {
+    //    out = torch::empty_like(q);
+    //}
+
+    auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
+    const int head_size_rounded = head_size <= 192 ? round_multiple(head_size, 32) : 256;
+    const int seqlen_q_rounded = round_multiple(seqlen_q, 128);
+    const int seqlen_k_rounded = round_multiple(seqlen_k, 128);
+
+    //auto opts = q.options();
+
+    //auto softmax_lse = torch::empty({batch_size, num_heads, seqlen_q}, opts.dtype(at::kFloat));
+    //at::Tensor p;
+    //// Only return softmax if there's dropout to reduce compilation time
+    //if (return_softmax) {
+    //    CAPI_CHECK(p_dropout > 0.0f, "return_softmax is only supported when p_dropout > 0.0");
+    //    p = torch::empty({ batch_size, num_heads, seqlen_q_rounded, seqlen_k_rounded }, opts);
+    //}
+    //else {
+    //    p = torch::empty({ 0 }, opts);
+    //}
+
+    Flash_fwd_params params;
+    set_params_fprop(params,
+                     batch_size,
+                     seqlen_q, seqlen_k,
+                     seqlen_q_rounded, seqlen_k_rounded,
+                     num_heads, num_heads_k,
+                     head_size, head_size_rounded,
+                     q, k, v, out,
+                     /*cu_seqlens_q_d=*/FlashattnTensor{},
+                     /*cu_seqlens_k_d=*/FlashattnTensor{},
+                     /*seqused_k=*/FlashattnTensor{},
+                     FlashattnTensor{},
+                     softmax_lse,
+                     0.0,
+                     softmax_scale,
+                     window_size_left,
+                     window_size_right,
+                     0.0f,
+                     seqlenq_ngroups_swapped
+                     );
+
+    // Keep references to these tensors to extend their lifetime
+    //at::Tensor softmax_lse_accum, out_accum;
+    set_params_splitkv(
+        params, batch_size, num_heads, head_size, seqlen_k, seqlen_q,
+        head_size_rounded, 0.f, /*num_splits*/ 0, get_num_sm(get_current_device()), softmax_lse_accum, out_accum);
+
+    // NOTE(woosuk): Commented out because they are not used in inference.
+    // // number of times random will be generated per thread, to offset philox counter in thc random
+    // // state
+    // // We use a custom RNG that increases the offset by batch_size * nheads * 32.
+    // int64_t counter_offset = params.b * params.h * 32;
+    // auto options = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA);
+    // auto rng_state = torch::empty({2}, options.dtype(torch::kInt64));
+    // // Forward kernel will populate memory with the seed and offset.
+    // params.rng_state = reinterpret_cast<uint64_t*>(rng_state.data_ptr());
+
+    // if (p_dropout > 0.0)  {
+    //     auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
+    //         gen_, at::cuda::detail::getDefaultCUDAGenerator());
+    //     // See Note [Acquire lock when using random generators]
+    //     std::lock_guard<std::mutex> lock(gen->mutex_);
+    //     params.philox_args = gen->philox_cuda_state(counter_offset);
+    // }
+
+    //set_params_alibi(params, alibi_slopes, batch_size, num_heads);
+
+    if (seqlen_k > 0) {
+        run_mha_fwd(params, reinterpret_cast<cudaStream_t>(stream));
+    } else {
+        // If seqlen_k == 0, then we have an empty tensor. We need to set the output to 0.
+        //out.zero_();
+        //softmax_lse.fill_(std::numeric_limits<float>::infinity());
+    }
+
+    if (seqlenq_ngroups_swapped) {
+        // NOTE(Corentin): We assume that out already has the correct shape
+        //out = out.transpose(1, 2).reshape({batch_size, 1, num_heads_k * seqlen_q, head_size});
+        //q = q.transpose(1, 2).reshape({batch_size, 1, num_heads_k * seqlen_q, head_size});
+        //softmax_lse = softmax_lse.reshape({batch_size, num_heads_k * seqlen_q, 1});
+    }
+}
+
 void flashattn_mha_varlen_fwd(
         FlashattnTensor q, // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
         FlashattnTensor k, // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
@@ -429,6 +582,34 @@ void flashattn_mha_varlen_fwd(
 }
 
 }
+
+void fa2_mha_fwd(
+        FlashattnTensor q, // batch_size x seqlen_q x num_heads x round_multiple(head_size, 8)
+        FlashattnTensor k, // batch_size x seqlen_k x num_heads_k x round_multiple(head_size, 8)
+        FlashattnTensor v, // batch_size x seqlen_k x num_heads_k x round_multiple(head_size, 8)
+        FlashattnTensor out, // batch_size x seqlen_q x num_heads x round_multiple(head_size, 8)
+        FlashattnTensor softmax_lse, // batch_size x num_heads x seqlen_q
+        FlashattnTensor alibi_slopes_, // num_heads or batch_size x num_heads
+        FlashattnTensor softmax_lse_accum,
+        FlashattnTensor out_accum,
+        FA2MhaFwdParams params,
+        void* stream) {
+    FLASH_NAMESPACE::flashattn_mha_fwd(
+        q,
+        k,
+        v,
+        out,
+        softmax_lse,
+        alibi_slopes_,
+        softmax_lse_accum,
+        out_accum,
+        params.softmax_scale,
+        params.is_causal,
+        params.window_size_left,
+        params.window_size_right,
+        stream);
+}
+
 void fa2_mha_varlen_fwd(
         FlashattnTensor q,
         FlashattnTensor k,
