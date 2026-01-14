@@ -18,7 +18,7 @@ archive_override(
 cuda = use_extension("@rules_cuda//cuda:extensions.bzl", "toolchain")
 cuda.toolkit(
     name = "cuda",
-    toolkit_path = "/usr/local/cuda-13.1",
+    toolkit_path = "/usr/local/cuda-13.0",
 )
 use_repo(cuda, "cuda")
 
