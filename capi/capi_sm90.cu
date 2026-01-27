@@ -727,7 +727,7 @@ mha_fwd(const FlashattnTensor *q, // (b, s_q, h, d) or (total_q, h, d) if there 
         //CAPI_CHECK(scheduler_metadata_->dtype == CAPI_INT32, "scheduler_metadata_ dtype should be int32");
         CAPI_CHECK(scheduler_metadata_ != nullptr, "scheduler_metadata_ needs to be passed");
         //if (scheduler_metadata_ != nullptr) {
-            CAPI_CHECK_SHAPE(scheduler_metadata_, metadata_size);
+            CAPI_CHECK(getDim(scheduler_metadata_, 0) >= metadata_size, "scheduler_metadata must have sufficient size");
             CAPI_CHECK(scheduler_metadata_->dtype == CAPI_INT32, "scheduler_metadata must have dtype int32");
             tile_count_semaphore = scheduler_metadata_;
         //} else {
