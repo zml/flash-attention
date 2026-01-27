@@ -429,8 +429,8 @@ void flashattn_mha_varlen_fwd(
                 "FlashAttention only support fp16 and bf16 data type");
     CAPI_CHECK(k->dtype == q->dtype, "query and key must have the same dtype");
     CAPI_CHECK(v->dtype == q->dtype, "query and value must have the same dtype");
-    CAPI_CHECK(cu_seqlens_q->ptr == nullptr || cu_seqlens_q->dtype == CAPI_INT32, "cu_seqlens_q must have dtype int32");
-    CAPI_CHECK(cu_seqlens_k->ptr == nullptr || cu_seqlens_k->dtype == CAPI_INT32, "cu_seqlens_k must have dtype int32");
+    CAPI_CHECK(cu_seqlens_q == nullptr || cu_seqlens_q->dtype == CAPI_INT32, "cu_seqlens_q must have dtype int32");
+    CAPI_CHECK(cu_seqlens_k == nullptr || cu_seqlens_k->dtype == CAPI_INT32, "cu_seqlens_k must have dtype int32");
 
     const FlashattnTensor* block_table = nullptr;
     const bool paged_KV = block_table_ != nullptr;
@@ -447,7 +447,7 @@ void flashattn_mha_varlen_fwd(
     const int batch_size = getDim(cu_seqlens_q, 0) - 1;
     //int num_heads = getDim(q, 1);
     const int head_size = getDim(q, 2);
-    const int num_heads_k = getDim(k, 1);
+    const int num_heads_k = paged_KV ? getDim(k, 2) : getDim(k, 1);
 
     const int max_num_blocks_per_seq = !paged_KV ? 0 : getDim(block_table, 1);
     const int num_blocks = !paged_KV ? 0 : getDim(k, 0);
