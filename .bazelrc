@@ -2,16 +2,8 @@
 # Faster hash function
 startup         --digest_function=blake3
 
-common          --enable_workspace=false
-
 # Don't need for now
 common          --lockfile_mode=update
-
-# Needed by LLVM and/or XLA
-common          --experimental_repo_remote_exec
-
-# Self explanatory
-common          --enable_platform_specific_config
 
 # Ensure host tools are built optimized
 build           --host_compilation_mode=opt
@@ -23,38 +15,48 @@ build           --host_copt='-w'
 # Enable C++17
 build           --cxxopt='-std=c++17'
 build           --host_cxxopt='-std=c++17'
-build           --enable_runfiles
-
-# Ensure the local env doesn't leak into the build
-build           --incompatible_strict_action_env
 
 # Performance
-build           --reuse_sandbox_directories
-build           --nolegacy_external_runfiles
-
 build           --experimental_output_directory_naming_scheme=diff_against_dynamic_baseline
 
-# Ensure workers are sandboxed
-build           --worker_sandboxing
-
-# Allows symlinks with spaces
-build           --experimental_inprocess_symlink_creation
-
 # Build in debug for now, by default
-build           --compilation_mode=dbg
+build           --compilation_mode=opt
 
 build           --experimental_cc_shared_library
-build           --incompatible_use_cc_configure_from_rules_cc
-build           --experimental_starlark_cc_import
 
-build           --compiler=clang
+# build           --compiler=clang
 
 # Print test errors in the console
 test            --test_output=errors
 
 common          --incompatible_disallow_empty_glob=false
 
-build           --@rules_cuda//cuda:enable=True
+# common          --@rules_cuda//cuda:enable=True
+# common          --@rules_cuda//cuda:compiler=clang
+# remove this before commit
+# common          --override_module=rules_cuda=../rules_cuda
 
-common          --repo_env=CC=clang-18
-common          --repo_env=CUDA_HOME=/usr/local/cuda-12.8/
+# common          --repo_env=CC=clang-20
+
+common --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+common --repo_env=BAZEL_NO_APPLE_CPP_TOOLCHAIN=1
+common --repo_env=BAZEL_DO_NOT_DETECT_SWIFT_TOOLCHAIN=1
+
+common --experimental_cc_static_library
+
+common:bootstrap   --@llvm//toolchain:source=bootstrapped
+
+common --bes_results_url=https://app.buildbuddy.io/invocation/
+common --bes_backend=grpcs://remote.buildbuddy.io
+common --remote_cache=grpcs://remote.buildbuddy.io
+common --remote_cache_compression
+common --remote_download_toplevel
+common --nobuild_runfile_links
+common --remote_timeout=120
+common --noexperimental_throttle_remote_action_building
+common --experimental_remote_execution_keepalive
+common --grpc_keepalive_time=30s
+
+common:remote --remote_executor=grpcs://remote.buildbuddy.io
+common:remote --jobs=2000
+common:remote --extra_execution_platforms=@llvm//:rbe_platform
