@@ -1,25 +1,27 @@
-load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+load("@llvm//:cuda.bzl", "cuda_library")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_shared_library.bzl", "cc_shared_library")
 load("//:cuda_archs_loose_intersection_test.bzl", "cuda_test_suite")
 load("//:cuda_archs_loose_intersection.bzl", "cuda_archs_loose_intersection")
 
-cuda_test_suite(
-    name = "cuda_tests",
-)
+# cuda_test_suite(
+#     name = "cuda_tests",
+# )
 
-cuda_library(
+cc_library(
     name = "cute",
     hdrs = glob(["csrc/cutlass/include/cute/**/*"]),
     includes = ["csrc/cutlass/include"],
 )
 
-cuda_library(
+cc_library(
     name = "cutlass_utils",
     hdrs = glob(["csrc/cutlass/tools/util/include/**/*"]),
     includes = ["csrc/cutlass/tools/util/include"],
     deps = [":cute"],
 )
 
-cuda_library(
+cc_library(
     name = "cutlass",
     hdrs = glob(["csrc/cutlass/include/cutlass/**/*"]),
     includes = ["csrc/cutlass/include"],
@@ -29,13 +31,13 @@ cuda_library(
     ],
 )
 
-cuda_library(
+cc_library(
     name = "c10_stub",
     hdrs = ["csrc/c10/cuda/CUDAException.h"],
     includes = ["csrc"],
 )
 
-cuda_library(
+cc_library(
     name = "ATen_stub",
     hdrs = [
         "csrc/ATen/cuda/CUDAGeneratorImpl.h",
@@ -44,11 +46,13 @@ cuda_library(
     includes = ["csrc"],
 )
 
-cuda_library(
+cc_library(
     name = "flashattn-headers",
     hdrs = glob(["csrc/flash_attn/src/*.h", "csrc/flash_attn/src/*.cuh"]),
     includes = ["csrc/flash_attn/src/"],
 )
+
+FA2_ARCHS = ["sm_80", "sm_86", "sm_89", "sm_100", "sm_120"]
 
 cuda_library(
     name = "flashattn",
@@ -59,6 +63,7 @@ cuda_library(
         "FLASHATTENTION_DISABLE_UNEVEN_K",
     ],
     deps = [
+        "@cuda//cuda:cuda_headers",
         "//:flashattn-headers",
         "//:cute",
         "//:cutlass",
@@ -70,12 +75,13 @@ cuda_library(
         "-U__CUDA_NO_HALF_CONVERSIONS__",
         "-U__CUDA_NO_HALF2_OPERATORS__",
         "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-        "--expt-relaxed-constexpr",
-        "--expt-extended-lambda",
-        "--use_fast_math",
-        "--compress-mode=size",
+        # "--expt-relaxed-constexpr",
+        # "--expt-extended-lambda",
+        # "--use_fast_math",
+        # "--compress-mode=size",
+        # "-ffast-math",
     ],
-    archs = cuda_archs_loose_intersection(["8.0+PTX"], ["8.0", "8.6", "8.9", "9.0", "10.0", "10.1", "11.0", "12.0"]),
+    archs = FA2_ARCHS,
     srcs = [
         "csrc/flash_attn/src/flash_fwd_hdim32_fp16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim32_bf16_sm80.cu",
@@ -136,15 +142,15 @@ cuda_library(
     ],
 )
 
-cuda_library(
+cc_library(
     name = "capi-hdrs",
     hdrs = ["capi/capi.h", "capi/fa_utils.h"],
     copts = [],
 )
 
-cuda_library(
+cc_library(
     name = "capi",
-    srcs = ["capi/capi.cu"],
+    srcs = ["capi/capi.cc"],
     defines = [
         "ENABLE_FP8",
         "FLASHATTENTION_DISABLE_BACKWARD",
@@ -156,17 +162,27 @@ cuda_library(
         "-U__CUDA_NO_HALF_CONVERSIONS__",
         "-U__CUDA_NO_HALF2_OPERATORS__",
         "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-        "--expt-relaxed-constexpr",
-        "--expt-extended-lambda",
-        "--use_fast_math",
-        "--compress-mode=size",
+        # "--expt-relaxed-constexpr",
+        # "--expt-extended-lambda",
+        # "--use_fast_math",
+        # "--compress-mode=size",
+        # "-ffast-math",
         "--std=c++20",
     ],
-    deps = [":flashattn", ":capi-hdrs"],
+    deps = [
+        "@cuda//cuda:cuda_headers",
+        ":capi-hdrs",
+        "//:flashattn-headers",
+        "//:cute",
+        "//:cutlass",
+        "//:c10_stub",
+        "//:ATen_stub",
+        # ":flashattn",
+    ],
     alwayslink = True,
 )
 
-cuda_library(
+cc_library(
     name = "flashattn-sm90-headers",
     hdrs = glob(["hopper/*.h", "hopper/*.hpp"]),
     includes = ["hopper/"],
@@ -175,6 +191,7 @@ cuda_library(
 cuda_library(
     name = "flashattn-sm90",
     deps = [
+        "@cuda//cuda:cuda_headers",
         ":capi-hdrs",
         "//:flashattn-sm90-headers",
         "//:cute",
@@ -199,12 +216,14 @@ cuda_library(
         "-U__CUDA_NO_HALF_CONVERSIONS__",
         "-U__CUDA_NO_HALF2_OPERATORS__",
         "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-        "--expt-relaxed-constexpr",
-        "--expt-extended-lambda",
-        "--use_fast_math",
-        "--compress-mode=size",
+        # "--expt-relaxed-constexpr",
+        # "--expt-extended-lambda",
+        # "--use_fast_math",
+        # "--compress-mode=size",
+        # "-ffast-math",
     ],
-    archs = cuda_archs_loose_intersection(["9.0a"], ["8.0", "8.6", "8.9", "9.0", "10.0", "10.1", "11.0", "12.0"]),
+    # archs = cuda_archs_loose_intersection(["9.0a"], ["8.0", "8.6", "8.9", "9.0", "10.0", "10.1", "11.0", "12.0"]),
+    archs = ["sm_90a"],
     srcs = [
         "hopper/flash_prepare_scheduler.cu",
         "hopper/flash_fwd_combine.cu",
@@ -235,9 +254,9 @@ cuda_library(
     ]),
 )
 
-cuda_library(
+cc_library(
     name = "capi-sm90",
-    srcs = ["capi/capi_sm90.cu"],
+    srcs = ["capi/capi_sm90.cc"],
     defines = [
         "FLASHATTENTION_DISABLE_BACKWARD",
         "FLASHATTENTION_DISABLE_DROPOUT",
@@ -250,23 +269,41 @@ cuda_library(
         "CUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED",
         "CUTLASS_ENABLE_GDC_FOR_SM90",
     ],
+    # archs = ["sm_90a"],
     copts = [
         "-U__CUDA_NO_HALF_OPERATORS__",
         "-U__CUDA_NO_HALF_CONVERSIONS__",
         "-U__CUDA_NO_HALF2_OPERATORS__",
         "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-        "--expt-relaxed-constexpr",
-        "--expt-extended-lambda",
-        "--use_fast_math",
-        "--compress-mode=size",
+        # "--expt-relaxed-constexpr",
+        # "--expt-extended-lambda",
+        # "--use_fast_math",
+        # "--compress-mode=size",
+        # "-ffast-math",
         "--std=c++20",
     ],
-    deps = [":flashattn-sm90", ":capi-hdrs"],
+    deps = [
+        "@cuda//cuda:cuda_headers",
+        ":capi-hdrs",
+        "//:flashattn-sm90-headers",
+        "//:cute",
+        "//:cutlass",
+        "//:c10_stub",
+        "//:ATen_stub",
+    ],
+    # host_deps = [
+    #     ":flashattn-sm90",
+    # ],
     alwayslink = True,
 )
 
 cc_shared_library(
     name = "flashattn_so",
     shared_lib_name = "libflashattn.so",
-    deps = [":capi", ":capi-sm90"],
+    deps = [
+        ":capi",
+        ":capi-sm90",
+        ":flashattn",
+        ":flashattn-sm90",
+    ],
 )
