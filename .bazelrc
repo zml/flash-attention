@@ -61,7 +61,7 @@ common          --override_module=rules_cuda=../rules_cuda
 
 common          --repo_env=CC=clang-20
 
-common --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+# common --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
 common --repo_env=BAZEL_NO_APPLE_CPP_TOOLCHAIN=1
 common --repo_env=BAZEL_DO_NOT_DETECT_SWIFT_TOOLCHAIN=1
 
