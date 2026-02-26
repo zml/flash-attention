@@ -3,22 +3,27 @@ module(
 )
 
 bazel_dep(name = "googletest", version = "1.16.0")
-bazel_dep(name = "rules_cuda", version = "0.2.5")
+bazel_dep(name = "rules_cuda", version = "0.3.0")
 bazel_dep(name = "rules_cc", version = "0.1.1")
 bazel_dep(name = "bazel_skylib", version = "1.7.1")
 bazel_dep(name = "rules_python", version = "1.3.0")
 bazel_dep(name = "platforms", version = "0.0.11")
 
-archive_override(
-    module_name = "rules_cuda",
-    url = "https://github.com/bazel-contrib/rules_cuda/archive/bfea6eea03ea6acd174ab21ba6309d08d358d0d7.tar.gz",
-    strip_prefix = "rules_cuda-bfea6eea03ea6acd174ab21ba6309d08d358d0d7",
+bazel_dep(name = "toolchains_llvm_bootstrapped", version = "0.5.8")
+register_toolchains(
+    "@toolchains_llvm_bootstrapped//toolchain:all",
 )
+
+# archive_override(
+#     module_name = "rules_cuda",
+#     url = "https://github.com/bazel-contrib/rules_cuda/archive/bfea6eea03ea6acd174ab21ba6309d08d358d0d7.tar.gz",
+#     strip_prefix = "rules_cuda-bfea6eea03ea6acd174ab21ba6309d08d358d0d7",
+# )
 
 cuda = use_extension("@rules_cuda//cuda:extensions.bzl", "toolchain")
 cuda.toolkit(
     name = "cuda",
-    toolkit_path = "/usr/local/cuda-13.0",
+    toolkit_path = "/usr/local/cuda-12",
 )
 use_repo(cuda, "cuda")
 
