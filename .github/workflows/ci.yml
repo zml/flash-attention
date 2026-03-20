@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-linux-amd64:
+    uses: ./.github/workflows/_so_build.yml
+    with:
+      platform: "@llvm//platforms:linux_amd64"
+      artifact-name: "libflashattn-linux-amd64.so"
+
+  build-linux-arm64:
+    uses: ./.github/workflows/_so_build.yml
+    with:
+      platform: "@llvm//platforms:linux_arm64"
+      artifact-name: "libflashattn-linux-arm64.so"
