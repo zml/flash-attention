@@ -1,0 +1,53 @@
+name: Build flashattn shared library
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: "Target platform label"
+        required: true
+        type: string
+      artifact-name:
+        description: "Output artifact file name"
+        required: true
+        type: string
+      upload-artifact:
+        description: "Upload build output as workflow artifact"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: Build ${{ inputs.artifact-name }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Build shared library
+        run: |
+          bazel build \
+            -c opt \
+            :flashattn_so \
+            --config remote \
+            --config ci \
+            --platforms=${{ inputs.platform }}
+
+      - name: Collect artifact
+        if: ${{ inputs.upload-artifact }}
+        run: |
+          mkdir -p dist
+          artifact="$(find bazel-bin -type f -name 'libflashattn.so' | head -n 1)"
+          test -n "${artifact}"
+          cp "${artifact}" "dist/${{ inputs.artifact-name }}"
+
+      - name: Upload artifact
+        if: ${{ inputs.upload-artifact }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: dist/${{ inputs.artifact-name }}
+          if-no-files-found: error

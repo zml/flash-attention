@@ -8,12 +8,11 @@
 name: Build wheels and deploy
 
 on:
-  create:
-    tags:
-      - v*
+  workflow_dispatch:
 
 jobs:
   setup_release:
+    if: ${{ false }}
     name: Create Release
     runs-on: ubuntu-latest
     outputs:
@@ -33,6 +32,7 @@ jobs:
           release_name: ${{ steps.extract_branch.outputs.branch }}
 
   build_wheels:
+    if: ${{ false }}
     name: Build Wheel
     needs: setup_release
     strategy:
@@ -71,6 +71,7 @@ jobs:
       upload-to-release: true
 
   publish_package:
+    if: ${{ false }}
     name: Publish package
     needs: [build_wheels]
     runs-on: ubuntu-latest

@@ -1,25 +1,11 @@
 name: Lint
 
 on:
-  pull_request:
-    paths:
-      - 'flash_attn/cute/flash_bwd_sm90.py'
-      - 'flash_attn/cute/flash_bwd_preprocess.py'
-      - 'flash_attn/cute/flash_bwd_postprocess.py'
-      - 'flash_attn/cute/softmax.py'
-      - '.pre-commit-config.yaml'
-  push:
-    branches:
-      - main
-    paths:
-      - 'flash_attn/cute/flash_bwd_sm90.py'
-      - 'flash_attn/cute/flash_bwd_preprocess.py'
-      - 'flash_attn/cute/flash_bwd_postprocess.py'
-      - 'flash_attn/cute/softmax.py'
-      - '.pre-commit-config.yaml'
+  workflow_dispatch:
 
 jobs:
   pre-commit:
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

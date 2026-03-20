@@ -36,6 +36,7 @@ on:
 
 jobs:
   build-wheels:
+    if: ${{ false }}
     uses: ./.github/workflows/_build.yml
     with:
       runs-on: ${{ inputs.runs-on }}
