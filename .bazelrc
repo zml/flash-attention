@@ -22,21 +22,9 @@ build           --experimental_output_directory_naming_scheme=diff_against_dynam
 # Build in debug for now, by default
 build           --compilation_mode=opt
 
-build           --experimental_cc_shared_library
-
-# build           --compiler=clang
-
-# Print test errors in the console
-test            --test_output=errors
-
+common          --experimental_cc_shared_library
+common          --experimental_platform_in_output_dir
 common          --incompatible_disallow_empty_glob=false
-
-# common          --@rules_cuda//cuda:enable=True
-# common          --@rules_cuda//cuda:compiler=clang
-# remove this before commit
-# common          --override_module=rules_cuda=../rules_cuda
-
-# common          --repo_env=CC=clang-20
 
 common --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
 common --repo_env=BAZEL_NO_APPLE_CPP_TOOLCHAIN=1
@@ -57,6 +45,22 @@ common --noexperimental_throttle_remote_action_building
 common --experimental_remote_execution_keepalive
 common --grpc_keepalive_time=30s
 
+# Print test errors in the console
+test            --test_output=errors
+
 common:remote --remote_executor=grpcs://remote.buildbuddy.io
 common:remote --jobs=2000
 common:remote --extra_execution_platforms=@llvm//:rbe_platform
+
+# Enable remote execution on CI by default.
+common:ci --config remote
+
+# This directory is configured in GitHub actions to be persisted between runs.
+# docs: https://bazel.build/reference/command-line-reference#flag--disk_cache
+# build --disk_cache=~/.cache/bazel
+# docs: https://bazel.build/reference/command-line-reference#flag--repository_cache
+common:ci --repository_cache=~/.cache/bazel-repo
+common:ci --repo_contents_cache=~/.cache/bazel-repo/contents
+
+# docs: https://bazel.build/reference/command-line-reference#flag--remote_download_outputs
+common:ci --remote_download_outputs=minimal
