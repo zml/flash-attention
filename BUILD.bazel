@@ -91,8 +91,6 @@ cuda_library(
         "csrc/flash_attn/src/flash_fwd_hdim96_bf16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim128_fp16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim128_bf16_sm80.cu",
-        "csrc/flash_attn/src/flash_fwd_hdim160_fp16_sm80.cu",
-        "csrc/flash_attn/src/flash_fwd_hdim160_bf16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim192_fp16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim192_bf16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim256_fp16_sm80.cu",
@@ -105,8 +103,6 @@ cuda_library(
         "csrc/flash_attn/src/flash_fwd_hdim96_bf16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim128_fp16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim128_bf16_causal_sm80.cu",
-        "csrc/flash_attn/src/flash_fwd_hdim160_fp16_causal_sm80.cu",
-        "csrc/flash_attn/src/flash_fwd_hdim160_bf16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim192_fp16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim192_bf16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim256_fp16_causal_sm80.cu",
@@ -119,8 +115,6 @@ cuda_library(
         "csrc/flash_attn/src/flash_fwd_split_hdim96_bf16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim128_fp16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim128_bf16_sm80.cu",
-        "csrc/flash_attn/src/flash_fwd_split_hdim160_fp16_sm80.cu",
-        "csrc/flash_attn/src/flash_fwd_split_hdim160_bf16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim192_fp16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim192_bf16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim256_fp16_sm80.cu",
@@ -133,8 +127,6 @@ cuda_library(
         "csrc/flash_attn/src/flash_fwd_split_hdim96_bf16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim128_fp16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim128_bf16_causal_sm80.cu",
-        "csrc/flash_attn/src/flash_fwd_split_hdim160_fp16_causal_sm80.cu",
-        "csrc/flash_attn/src/flash_fwd_split_hdim160_bf16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim192_fp16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim192_bf16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim256_fp16_causal_sm80.cu",
@@ -177,7 +169,6 @@ cc_library(
         "//:cutlass",
         "//:c10_stub",
         "//:ATen_stub",
-        # ":flashattn",
     ],
     alwayslink = True,
 )
@@ -222,7 +213,6 @@ cuda_library(
         # "--compress-mode=size",
         # "-ffast-math",
     ],
-    # archs = cuda_archs_loose_intersection(["9.0a"], ["8.0", "8.6", "8.9", "9.0", "10.0", "10.1", "11.0", "12.0"]),
     archs = ["sm_90a"],
     srcs = [
         "hopper/flash_prepare_scheduler.cu",
@@ -291,9 +281,6 @@ cc_library(
         "//:c10_stub",
         "//:ATen_stub",
     ],
-    # host_deps = [
-    #     ":flashattn-sm90",
-    # ],
     alwayslink = True,
 )
 

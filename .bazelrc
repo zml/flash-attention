@@ -46,8 +46,6 @@ common --experimental_cc_static_library
 
 common:bootstrap   --@llvm//toolchain:source=bootstrapped
 
-common --remote_header=x-buildbuddy-api-key=NihmZ0O64Ix4ftnohtk4
-
 common --bes_results_url=https://app.buildbuddy.io/invocation/
 common --bes_backend=grpcs://remote.buildbuddy.io
 common --remote_cache=grpcs://remote.buildbuddy.io
