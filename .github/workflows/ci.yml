@@ -11,10 +11,10 @@ jobs:
     uses: ./.github/workflows/_so_build.yml
     with:
       platform: "@llvm//platforms:linux_amd64"
-      artifact-name: "libflashattn-linux-amd64.so"
+      artifact-name: "flashattn-linux-amd64.tar.zst"
 
   build-linux-arm64:
     uses: ./.github/workflows/_so_build.yml
     with:
       platform: "@llvm//platforms:linux_arm64"
-      artifact-name: "libflashattn-linux-arm64.so"
+      artifact-name: "flashattn-linux-arm64.tar.zst"
