@@ -5,7 +5,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/release_flashattn_so.sh --tag vX.Y.Z [--target <git-ref>] [--notes-file <path>] [--dist-dir <path>] [--no-push-tag]
 
-Builds both flashattn shared-library artifacts locally, creates the git tag, pushes the tag,
+Builds both flashattn release archives locally, creates the git tag, pushes the tag,
 and creates or updates the GitHub release with the built artifacts.
 EOF
 }
@@ -83,16 +83,16 @@ if [[ "$requested_target" != "$head_target" ]]; then
 fi
 
 mkdir -p "$dist_dir"
-amd64_artifact="$dist_dir/libflashattn-linux-amd64.so"
-arm64_artifact="$dist_dir/libflashattn-linux-arm64.so"
+amd64_artifact="$dist_dir/flashattn-linux-amd64.tar.zst"
+arm64_artifact="$dist_dir/flashattn-linux-arm64.tar.zst"
 
 bazel build \
   -c opt \
-  :flashattn_so_for_all_platforms \
+  :flashattn_archive_for_all_platforms \
   --config remote
 
-cp bazel-out/linux_amd64-opt/bin/libflashattn.so "$amd64_artifact"
-cp bazel-out/linux_arm64-opt/bin/libflashattn.so "$arm64_artifact"
+cp bazel-out/linux_amd64-opt/bin/flashattn.tar.zst "$amd64_artifact"
+cp bazel-out/linux_arm64-opt/bin/flashattn.tar.zst "$arm64_artifact"
 
 if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
   existing_target="$(git rev-list -n 1 "$tag")"
