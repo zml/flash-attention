@@ -26,41 +26,43 @@ common          --experimental_cc_shared_library
 common          --experimental_platform_in_output_dir
 common          --incompatible_disallow_empty_glob=false
 
-common --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
-common --repo_env=BAZEL_NO_APPLE_CPP_TOOLCHAIN=1
-common --repo_env=BAZEL_DO_NOT_DETECT_SWIFT_TOOLCHAIN=1
+common          --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+common          --repo_env=BAZEL_NO_APPLE_CPP_TOOLCHAIN=1
+common          --repo_env=BAZEL_DO_NOT_DETECT_SWIFT_TOOLCHAIN=1
 
-common --experimental_cc_static_library
+common          --experimental_cc_static_library
 
-common:bootstrap   --@llvm//toolchain:source=bootstrapped
+common:bootstrap  --@llvm//toolchain:source=bootstrapped
 
-common --bes_results_url=https://app.buildbuddy.io/invocation/
-common --bes_backend=grpcs://remote.buildbuddy.io
-common --remote_cache=grpcs://remote.buildbuddy.io
-common --remote_cache_compression
-common --remote_download_toplevel
-common --nobuild_runfile_links
-common --remote_timeout=120
-common --noexperimental_throttle_remote_action_building
-common --experimental_remote_execution_keepalive
-common --grpc_keepalive_time=30s
-
-# Print test errors in the console
-test            --test_output=errors
-
-common:remote --remote_executor=grpcs://remote.buildbuddy.io
-common:remote --jobs=2000
-common:remote --extra_execution_platforms=@llvm//:rbe_platform
+common:remote   --bes_results_url=https://app.buildbuddy.io/invocation/
+common:remote   --bes_backend=grpcs://remote.buildbuddy.io
+common:remote   --remote_cache=grpcs://remote.buildbuddy.io
+common:remote   --remote_cache_compression
+common:remote   --remote_download_toplevel
+common:remote   --nobuild_runfile_links
+common:remote   --remote_timeout=120
+common:remote   --noexperimental_throttle_remote_action_building
+common:remote   --experimental_remote_execution_keepalive
+common:remote   --grpc_keepalive_time=30s
+common:remote   --remote_executor=grpcs://remote.buildbuddy.io
+common:remote   --experimental_remote_downloader=grpcs://remote.buildbuddy.io
+common:remote   --extra_execution_platforms=@llvm//:rbe_platform
+common:remote   --jobs=4000
 
 # Enable remote execution on CI by default.
-common:ci --config remote
+common:ci       --config=remote
 
 # This directory is configured in GitHub actions to be persisted between runs.
 # docs: https://bazel.build/reference/command-line-reference#flag--disk_cache
 # build --disk_cache=~/.cache/bazel
 # docs: https://bazel.build/reference/command-line-reference#flag--repository_cache
-common:ci --repository_cache=~/.cache/bazel-repo
-common:ci --repo_contents_cache=~/.cache/bazel-repo/contents
+common:ci       --repository_cache=~/.cache/bazel-repo
+common:ci       --repo_contents_cache=~/.cache/bazel-repo/contents
 
 # docs: https://bazel.build/reference/command-line-reference#flag--remote_download_outputs
-common:ci --remote_download_outputs=minimal
+common:ci       --remote_download_outputs=minimal
+
+common:release  --compilation_mode=opt
+
+# Print test errors in the console
+test            --test_output=errors
