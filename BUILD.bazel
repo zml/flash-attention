@@ -55,6 +55,16 @@ cc_library(
 
 FA2_ARCHS = ["sm_80", "sm_86", "sm_89", "sm_100", "sm_120"]
 
+CUDA_HEADER_DEPS = [
+    "@cuda//cuda:cuda_headers",
+    "@cccl//:cuda_headers",
+    "@cccl//:nv_headers",
+]
+
+CUDA_COMPILATION_HEADER_DEPS = CUDA_HEADER_DEPS + [
+    "@cuda//curand:headers",
+]
+
 cuda_library(
     name = "flashattn",
     defines = [
@@ -63,8 +73,7 @@ cuda_library(
         "FLASHATTENTION_DISABLE_DROPOUT",
         "FLASHATTENTION_DISABLE_UNEVEN_K",
     ],
-    deps = [
-        "@cuda//cuda:cuda_headers",
+    deps = CUDA_COMPILATION_HEADER_DEPS + [
         "//:flashattn-headers",
         "//:cute",
         "//:cutlass",
@@ -162,8 +171,7 @@ cc_library(
         # "-ffast-math",
         "--std=c++20",
     ],
-    deps = [
-        "@cuda//cuda:cuda_headers",
+    deps = CUDA_HEADER_DEPS + [
         ":capi-hdrs",
         "//:flashattn-headers",
         "//:cute",
@@ -182,8 +190,9 @@ cc_library(
 
 cuda_library(
     name = "flashattn-sm90",
-    deps = [
-        "@cuda//cuda:cuda_headers",
+    deps = CUDA_COMPILATION_HEADER_DEPS + [
+        "@cccl//:cub_headers",
+        "@cccl//:thrust_headers",
         ":capi-hdrs",
         "//:flashattn-sm90-headers",
         "//:cute",
@@ -273,8 +282,7 @@ cc_library(
         # "-ffast-math",
         "--std=c++20",
     ],
-    deps = [
-        "@cuda//cuda:cuda_headers",
+    deps = CUDA_HEADER_DEPS + [
         ":capi-hdrs",
         "//:flashattn-sm90-headers",
         "//:cute",

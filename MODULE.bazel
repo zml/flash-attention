@@ -19,6 +19,16 @@ git_override(
 #     path = "../../cerisier/toolchains_llvm_bootstrapped",
 # )
 
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "cccl",
+    url = "https://github.com/NVIDIA/cccl/archive/b1951b22423d35b6fd4578e4df8ca8647fe3a465.tar.gz",
+    strip_prefix = "cccl-b1951b22423d35b6fd4578e4df8ca8647fe3a465",
+    build_file = "@cuda_toolkit//cuda/build_defs:cuda_cccl_github.BUILD.bazel",
+)
+
 register_toolchains(
     "@llvm//toolchain:all",
 )
@@ -26,7 +36,7 @@ register_toolchains(
 bazel_dep(name = "cuda_toolkit", version = "0.0.2")
 git_override(
     module_name = "cuda_toolkit",
-    commit = "f6251f4a34b2190c2a4e4167ff698d853a677d09",
+    commit = "0c9592678f74c7c435dd2ec56d7c02ec199a63e0",
     remote = "https://github.com/hermeticbuild/cuda-toolkit.git",
 )
 # local_path_override(
@@ -39,9 +49,13 @@ register_toolchains(
     "@cuda//cuda:all",
 )
 
+# cuda_ext.redist(
+#     name = "cuda_13_0_2",
+#     version = "13.0.2",
+# )
 cuda_ext.redist(
-    name = "cuda_13_0_2",
-    version = "13.0.2",
+    name = "cuda_13_1_1",
+    version = "13.1.1",
 )
 # cuda_ext.redist(
 #     name = "cuda_12_8_1",
