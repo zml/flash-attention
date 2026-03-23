@@ -2,8 +2,7 @@ load("@bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
 load("@llvm//:cuda.bzl", "cuda_library")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_shared_library.bzl", "cc_shared_library")
-load("//:cuda_archs_loose_intersection_test.bzl", "cuda_test_suite")
-load("//:cuda_archs_loose_intersection.bzl", "cuda_archs_loose_intersection")
+load("@tar.bzl//tar:tar.bzl", "tar")
 
 # cuda_test_suite(
 #     name = "cuda_tests",
@@ -317,6 +316,27 @@ cc_shared_library(
     ],
 )
 
+tar(
+    name = "flashattn_archive",
+    srcs = [
+        "capi/capi.h",
+        ":flashattn_so",
+    ],
+    out = "flashattn.tar.zst",
+    args = [
+        "--options",
+        ",".join([
+            "zstd:compression-level=19",
+            "zstd:threads=16",
+        ]),
+    ],
+    compress = "zstd",
+    mtree = [
+        "flashattn/flashattn.h uid=0 gid=0 mode=0644 time=0 type=file content=$(location :capi/capi.h)",
+        "flashattn/libflashattn.so uid=0 gid=0 mode=0644 time=0 type=file content=$(location :flashattn_so)",
+    ],
+)
+
 ## RELEASE
 
 RELEASE_PLATFORMS = [
@@ -326,14 +346,14 @@ RELEASE_PLATFORMS = [
 
 [
     platform_transition_filegroup(
-        name = "flashattn_so_for_" + platform.split(":")[1],
-        srcs = [":flashattn_so"],
+        name = "flashattn_archive_for_" + platform.split(":")[1],
+        srcs = [":flashattn_archive"],
         target_platform = platform,
     )
     for platform in RELEASE_PLATFORMS
 ]
 
 filegroup(
-    name = "flashattn_so_for_all_platforms",
-    srcs = ["flashattn_so_for_" + platform.split(":")[1] for platform in RELEASE_PLATFORMS],
+    name = "flashattn_archive_for_all_platforms",
+    srcs = ["flashattn_archive_for_" + platform.split(":")[1] for platform in RELEASE_PLATFORMS],
 )
