@@ -27,6 +27,7 @@ http_archive(
     url = "https://github.com/NVIDIA/cccl/archive/b1951b22423d35b6fd4578e4df8ca8647fe3a465.tar.gz",
     strip_prefix = "cccl-b1951b22423d35b6fd4578e4df8ca8647fe3a465",
     build_file = "@cuda_toolkit//cuda/build_defs:cuda_cccl_github.BUILD.bazel",
+    integrity = "sha256-67GlI1MmJjCRgGXnPho+EfCP4xuZDCk7SR38nLkrB6g=",
 )
 
 register_toolchains(
