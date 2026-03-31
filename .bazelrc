@@ -2,16 +2,8 @@
 # Faster hash function
 startup         --digest_function=blake3
 
-common          --enable_workspace=false
-
 # Don't need for now
 common          --lockfile_mode=update
-
-# Needed by LLVM and/or XLA
-common          --experimental_repo_remote_exec
-
-# Self explanatory
-common          --enable_platform_specific_config
 
 # Ensure host tools are built optimized
 build           --host_compilation_mode=opt
@@ -23,38 +15,54 @@ build           --host_copt='-w'
 # Enable C++17
 build           --cxxopt='-std=c++17'
 build           --host_cxxopt='-std=c++17'
-build           --enable_runfiles
-
-# Ensure the local env doesn't leak into the build
-build           --incompatible_strict_action_env
 
 # Performance
-build           --reuse_sandbox_directories
-build           --nolegacy_external_runfiles
-
 build           --experimental_output_directory_naming_scheme=diff_against_dynamic_baseline
 
-# Ensure workers are sandboxed
-build           --worker_sandboxing
-
-# Allows symlinks with spaces
-build           --experimental_inprocess_symlink_creation
-
 # Build in debug for now, by default
-build           --compilation_mode=dbg
+build           --compilation_mode=opt
 
-build           --experimental_cc_shared_library
-build           --incompatible_use_cc_configure_from_rules_cc
-build           --experimental_starlark_cc_import
+common          --experimental_cc_shared_library
+common          --experimental_platform_in_output_dir
+common          --incompatible_disallow_empty_glob=false
 
-build           --compiler=clang
+common          --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+common          --repo_env=BAZEL_NO_APPLE_CPP_TOOLCHAIN=1
+common          --repo_env=BAZEL_DO_NOT_DETECT_SWIFT_TOOLCHAIN=1
+
+common          --experimental_cc_static_library
+
+common:bootstrap  --@llvm//toolchain:source=bootstrapped
+
+common:remote   --bes_results_url=https://app.buildbuddy.io/invocation/
+common:remote   --bes_backend=grpcs://remote.buildbuddy.io
+common:remote   --remote_cache=grpcs://remote.buildbuddy.io
+common:remote   --remote_cache_compression
+common:remote   --remote_download_toplevel
+common:remote   --nobuild_runfile_links
+common:remote   --remote_timeout=120
+common:remote   --noexperimental_throttle_remote_action_building
+common:remote   --experimental_remote_execution_keepalive
+common:remote   --grpc_keepalive_time=30s
+common:remote   --remote_executor=grpcs://remote.buildbuddy.io
+common:remote   --experimental_remote_downloader=grpcs://remote.buildbuddy.io
+common:remote   --extra_execution_platforms=@llvm//:rbe_platform
+common:remote   --jobs=4000
+
+# Enable remote execution on CI by default.
+common:ci       --config=remote
+
+# This directory is configured in GitHub actions to be persisted between runs.
+# docs: https://bazel.build/reference/command-line-reference#flag--disk_cache
+# build --disk_cache=~/.cache/bazel
+# docs: https://bazel.build/reference/command-line-reference#flag--repository_cache
+common:ci       --repository_cache=~/.cache/bazel-repo
+common:ci       --repo_contents_cache=~/.cache/bazel-repo/contents
+
+# docs: https://bazel.build/reference/command-line-reference#flag--remote_download_outputs
+common:ci       --remote_download_outputs=minimal
+
+common:release  --compilation_mode=opt
 
 # Print test errors in the console
 test            --test_output=errors
-
-common          --incompatible_disallow_empty_glob=false
-
-build           --@rules_cuda//cuda:enable=True
-
-common          --repo_env=CC=clang-18
-common          --repo_env=CUDA_HOME=/usr/local/cuda-12.8/

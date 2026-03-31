@@ -1,0 +1,54 @@
+name: Build flashattn release archive
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: "Target platform label"
+        required: true
+        type: string
+      artifact-name:
+        description: "Output artifact file name"
+        required: true
+        type: string
+      upload-artifact:
+        description: "Upload build output as workflow artifact"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: Build ${{ inputs.artifact-name }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Build release archive
+        run: |
+          bazel build \
+            -c opt \
+            :flashattn_archive \
+            --config remote \
+            --config ci \
+            --remote_header=x-buildbuddy-api-key=${{ secrets.BUILDBUDDY_CI_API_KEY }}
+            --platforms=${{ inputs.platform }}
+
+      - name: Collect artifact
+        if: ${{ inputs.upload-artifact }}
+        run: |
+          set -x
+          mkdir -p dist
+          ls -la bazel-bin/
+          cp "bazel-bin/flashattn.tar.zst" "dist/${{ inputs.artifact-name }}"
+
+      - name: Upload artifact
+        if: ${{ inputs.upload-artifact }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: dist/${{ inputs.artifact-name }}
+          if-no-files-found: error

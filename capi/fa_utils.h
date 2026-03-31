@@ -5,6 +5,7 @@
 #include <cassert>
 #include <span>
 #include <algorithm>
+#include <sstream>
 
 #define CAPI_CHECK(cond, ...)                                                                 \
     do {                                                                                      \

@@ -1,0 +1,45 @@
+name: Build and release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-amd64:
+    uses: ./.github/workflows/_so_build.yml
+    with:
+      platform: "@llvm//platforms:linux_amd64"
+      artifact-name: "flashattn-linux-amd64.tar.zst"
+      upload-artifact: true
+
+  build-linux-arm64:
+    uses: ./.github/workflows/_so_build.yml
+    with:
+      platform: "@llvm//platforms:linux_arm64"
+      artifact-name: "flashattn-linux-arm64.tar.zst"
+      upload-artifact: true
+
+  release:
+    name: Create release
+    runs-on: ubuntu-latest
+    needs:
+      - build-linux-amd64
+      - build-linux-arm64
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/flashattn-linux-amd64.tar.zst
+            dist/flashattn-linux-arm64.tar.zst
+          generate_release_notes: true

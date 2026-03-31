@@ -1,25 +1,27 @@
-load("@rules_cuda//cuda:defs.bzl", "cuda_library")
-load("//:cuda_archs_loose_intersection_test.bzl", "cuda_test_suite")
-load("//:cuda_archs_loose_intersection.bzl", "cuda_archs_loose_intersection")
+load("@bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
+load("@llvm//:cuda.bzl", "cuda_library")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_shared_library.bzl", "cc_shared_library")
+load("@tar.bzl//tar:tar.bzl", "tar")
 
-cuda_test_suite(
-    name = "cuda_tests",
-)
+# cuda_test_suite(
+#     name = "cuda_tests",
+# )
 
-cuda_library(
+cc_library(
     name = "cute",
     hdrs = glob(["csrc/cutlass/include/cute/**/*"]),
     includes = ["csrc/cutlass/include"],
 )
 
-cuda_library(
+cc_library(
     name = "cutlass_utils",
     hdrs = glob(["csrc/cutlass/tools/util/include/**/*"]),
     includes = ["csrc/cutlass/tools/util/include"],
     deps = [":cute"],
 )
 
-cuda_library(
+cc_library(
     name = "cutlass",
     hdrs = glob(["csrc/cutlass/include/cutlass/**/*"]),
     includes = ["csrc/cutlass/include"],
@@ -29,13 +31,13 @@ cuda_library(
     ],
 )
 
-cuda_library(
+cc_library(
     name = "c10_stub",
     hdrs = ["csrc/c10/cuda/CUDAException.h"],
     includes = ["csrc"],
 )
 
-cuda_library(
+cc_library(
     name = "ATen_stub",
     hdrs = [
         "csrc/ATen/cuda/CUDAGeneratorImpl.h",
@@ -44,11 +46,23 @@ cuda_library(
     includes = ["csrc"],
 )
 
-cuda_library(
+cc_library(
     name = "flashattn-headers",
     hdrs = glob(["csrc/flash_attn/src/*.h", "csrc/flash_attn/src/*.cuh"]),
     includes = ["csrc/flash_attn/src/"],
 )
+
+FA2_ARCHS = ["sm_80", "sm_86", "sm_89", "sm_100", "sm_120", "sm_121"]
+
+CUDA_HEADER_DEPS = [
+    "@cuda//cuda:cuda_headers",
+    "@cccl//:cuda_headers",
+    "@cccl//:nv_headers",
+]
+
+CUDA_COMPILATION_HEADER_DEPS = CUDA_HEADER_DEPS + [
+    "@cuda//curand:headers",
+]
 
 cuda_library(
     name = "flashattn",
@@ -58,7 +72,7 @@ cuda_library(
         "FLASHATTENTION_DISABLE_DROPOUT",
         "FLASHATTENTION_DISABLE_UNEVEN_K",
     ],
-    deps = [
+    deps = CUDA_COMPILATION_HEADER_DEPS + [
         "//:flashattn-headers",
         "//:cute",
         "//:cutlass",
@@ -70,12 +84,13 @@ cuda_library(
         "-U__CUDA_NO_HALF_CONVERSIONS__",
         "-U__CUDA_NO_HALF2_OPERATORS__",
         "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-        "--expt-relaxed-constexpr",
-        "--expt-extended-lambda",
-        "--use_fast_math",
-        "--compress-mode=size",
+        # "--expt-relaxed-constexpr",
+        # "--expt-extended-lambda",
+        # "--use_fast_math",
+        # "--compress-mode=size",
+        # "-ffast-math",
     ],
-    archs = cuda_archs_loose_intersection(["8.0+PTX"], ["8.0", "8.6", "8.9", "9.0", "10.0", "10.1", "11.0", "12.0"]),
+    archs = FA2_ARCHS,
     srcs = [
         "csrc/flash_attn/src/flash_fwd_hdim32_fp16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim32_bf16_sm80.cu",
@@ -85,8 +100,6 @@ cuda_library(
         "csrc/flash_attn/src/flash_fwd_hdim96_bf16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim128_fp16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim128_bf16_sm80.cu",
-        "csrc/flash_attn/src/flash_fwd_hdim160_fp16_sm80.cu",
-        "csrc/flash_attn/src/flash_fwd_hdim160_bf16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim192_fp16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim192_bf16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim256_fp16_sm80.cu",
@@ -99,8 +112,6 @@ cuda_library(
         "csrc/flash_attn/src/flash_fwd_hdim96_bf16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim128_fp16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim128_bf16_causal_sm80.cu",
-        "csrc/flash_attn/src/flash_fwd_hdim160_fp16_causal_sm80.cu",
-        "csrc/flash_attn/src/flash_fwd_hdim160_bf16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim192_fp16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim192_bf16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_hdim256_fp16_causal_sm80.cu",
@@ -113,8 +124,6 @@ cuda_library(
         "csrc/flash_attn/src/flash_fwd_split_hdim96_bf16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim128_fp16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim128_bf16_sm80.cu",
-        "csrc/flash_attn/src/flash_fwd_split_hdim160_fp16_sm80.cu",
-        "csrc/flash_attn/src/flash_fwd_split_hdim160_bf16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim192_fp16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim192_bf16_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim256_fp16_sm80.cu",
@@ -127,8 +136,6 @@ cuda_library(
         "csrc/flash_attn/src/flash_fwd_split_hdim96_bf16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim128_fp16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim128_bf16_causal_sm80.cu",
-        "csrc/flash_attn/src/flash_fwd_split_hdim160_fp16_causal_sm80.cu",
-        "csrc/flash_attn/src/flash_fwd_split_hdim160_bf16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim192_fp16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim192_bf16_causal_sm80.cu",
         "csrc/flash_attn/src/flash_fwd_split_hdim256_fp16_causal_sm80.cu",
@@ -136,15 +143,15 @@ cuda_library(
     ],
 )
 
-cuda_library(
+cc_library(
     name = "capi-hdrs",
     hdrs = ["capi/capi.h", "capi/fa_utils.h"],
     copts = [],
 )
 
-cuda_library(
+cc_library(
     name = "capi",
-    srcs = ["capi/capi.cu"],
+    srcs = ["capi/capi.cc"],
     defines = [
         "ENABLE_FP8",
         "FLASHATTENTION_DISABLE_BACKWARD",
@@ -156,17 +163,25 @@ cuda_library(
         "-U__CUDA_NO_HALF_CONVERSIONS__",
         "-U__CUDA_NO_HALF2_OPERATORS__",
         "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-        "--expt-relaxed-constexpr",
-        "--expt-extended-lambda",
-        "--use_fast_math",
-        "--compress-mode=size",
+        # "--expt-relaxed-constexpr",
+        # "--expt-extended-lambda",
+        # "--use_fast_math",
+        # "--compress-mode=size",
+        # "-ffast-math",
         "--std=c++20",
     ],
-    deps = [":flashattn", ":capi-hdrs"],
+    deps = CUDA_HEADER_DEPS + [
+        ":capi-hdrs",
+        "//:flashattn-headers",
+        "//:cute",
+        "//:cutlass",
+        "//:c10_stub",
+        "//:ATen_stub",
+    ],
     alwayslink = True,
 )
 
-cuda_library(
+cc_library(
     name = "flashattn-sm90-headers",
     hdrs = glob(["hopper/*.h", "hopper/*.hpp"]),
     includes = ["hopper/"],
@@ -174,7 +189,9 @@ cuda_library(
 
 cuda_library(
     name = "flashattn-sm90",
-    deps = [
+    deps = CUDA_COMPILATION_HEADER_DEPS + [
+        "@cccl//:cub_headers",
+        "@cccl//:thrust_headers",
         ":capi-hdrs",
         "//:flashattn-sm90-headers",
         "//:cute",
@@ -185,12 +202,18 @@ cuda_library(
     defines = [
         "FLASHATTENTION_DISABLE_BACKWARD",
         "FLASHATTENTION_DISABLE_DROPOUT",
-        "FLASHATTENTION_DISABLE_SOFTCAP",
+        # FLASHATTENTION_DISABLE_ALIBI
+        # "FLASHATTENTION_DISABLE_SOFTCAP",
         "FLASHATTENTION_DISABLE_UNEVEN_K",
+        # FLASHATTENTION_DISABLE_LOCAL
+        "FLASHATTENTION_DISABLE_PYBIND",
         "FLASHATTENTION_VARLEN_ONLY",
-        "FLASHATTENTION_DISABLE_SM8x",
-        "FLASHATTENTION_DISABLE_APPENDKV",
+        "FLASHATTENTION_PACKGQA_ONLY",
         "FLASHATTENTION_DISABLE_CLUSTER",
+        "FLASHATTENTION_DISABLE_SM8x",
+        # FLASHATTENTION_DISABLE_HDIMDIFF64
+        # FLASHATTENTION_DISABLE_HDIMDIFF192
+        "FLASHATTENTION_DISABLE_APPENDKV",
         "CUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED",
         "CUTLASS_ENABLE_GDC_FOR_SM90",
     ],
@@ -199,74 +222,162 @@ cuda_library(
         "-U__CUDA_NO_HALF_CONVERSIONS__",
         "-U__CUDA_NO_HALF2_OPERATORS__",
         "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-        "--expt-relaxed-constexpr",
-        "--expt-extended-lambda",
-        "--use_fast_math",
-        "--compress-mode=size",
+        # "--expt-relaxed-constexpr",
+        # "--expt-extended-lambda",
+        # "--use_fast_math",
+        # "--compress-mode=size",
+        # "-ffast-math",
     ],
-    archs = cuda_archs_loose_intersection(["9.0a"], ["8.0", "8.6", "8.9", "9.0", "10.0", "10.1", "11.0", "12.0"]),
+    archs = ["sm_90a"],
     srcs = [
         "hopper/flash_prepare_scheduler.cu",
         "hopper/flash_fwd_combine.cu",
     ] 
     + glob([
-        "hopper/instantiations/flash_fwd_hdim64_bf16*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim96_bf16*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim128_bf16*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim192_bf16*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim256_bf16*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim64_256_bf16*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim64_512_bf16*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim192_128_bf16*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim64_fp16*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim96_fp16*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim128_fp16*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim192_fp16*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim256_fp16*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim64_256_fp16*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim64_512_fp16*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim192_128_fp16*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim64_e4m3*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim96_e4m3*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim128_e4m3*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim192_e4m3*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim256_e4m3*_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim192_128_e4m3*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim64_bf16_*packgqa_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim96_bf16_*packgqa_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim128_bf16_*packgqa_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim192_bf16_*packgqa_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim256_bf16_*packgqa_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim64_bf16_split*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim96_bf16_split*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim128_bf16_split*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim192_bf16_split*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim256_bf16_split*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim64_bf16_paged*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim96_bf16_paged*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim128_bf16_paged*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim192_bf16_paged*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim256_bf16_paged*_sm90.cu",
+
+        "hopper/instantiations/flash_fwd_hdim64_fp16_*packgqa_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim96_fp16_*packgqa_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim128_fp16_*packgqa_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim192_fp16_*packgqa_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim256_fp16_*packgqa_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim64_fp16_split*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim96_fp16_split*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim128_fp16_split*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim192_fp16_split*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim256_fp16_split*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim64_fp16_paged*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim96_fp16_paged*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim128_fp16_paged*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim192_fp16_paged*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim256_fp16_paged*_sm90.cu",
+
+        "hopper/instantiations/flash_fwd_hdim64_e4m3_*packgqa_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim96_e4m3_*packgqa_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim128_e4m3_*packgqa_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim192_e4m3_*packgqa_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim256_e4m3_*packgqa_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim64_e4m3_split*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim96_e4m3_split*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim128_e4m3_split*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim192_e4m3_split*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim256_e4m3_split*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim64_e4m3_paged*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim96_e4m3_paged*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim128_e4m3_paged*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim192_e4m3_paged*_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim256_e4m3_paged*_sm90.cu",
     ]),
 )
 
-cuda_library(
+cc_library(
     name = "capi-sm90",
-    srcs = ["capi/capi_sm90.cu"],
+    srcs = ["capi/capi_sm90.cc"],
     defines = [
         "FLASHATTENTION_DISABLE_BACKWARD",
         "FLASHATTENTION_DISABLE_DROPOUT",
-        "FLASHATTENTION_DISABLE_SOFTCAP",
+        # FLASHATTENTION_DISABLE_ALIBI
+        # "FLASHATTENTION_DISABLE_SOFTCAP",
         "FLASHATTENTION_DISABLE_UNEVEN_K",
+        # FLASHATTENTION_DISABLE_LOCAL
+        "FLASHATTENTION_DISABLE_PYBIND",
         "FLASHATTENTION_VARLEN_ONLY",
-        "FLASHATTENTION_DISABLE_SM8x",
-        "FLASHATTENTION_DISABLE_APPENDKV",
+        "FLASHATTENTION_PACKGQA_ONLY",
         "FLASHATTENTION_DISABLE_CLUSTER",
+        "FLASHATTENTION_DISABLE_SM8x",
+        # FLASHATTENTION_DISABLE_HDIMDIFF64
+        # FLASHATTENTION_DISABLE_HDIMDIFF192
+        "FLASHATTENTION_DISABLE_APPENDKV",
         "CUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED",
         "CUTLASS_ENABLE_GDC_FOR_SM90",
     ],
+    # archs = ["sm_90a"],
     copts = [
         "-U__CUDA_NO_HALF_OPERATORS__",
         "-U__CUDA_NO_HALF_CONVERSIONS__",
         "-U__CUDA_NO_HALF2_OPERATORS__",
         "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-        "--expt-relaxed-constexpr",
-        "--expt-extended-lambda",
-        "--use_fast_math",
-        "--compress-mode=size",
+        # "--expt-relaxed-constexpr",
+        # "--expt-extended-lambda",
+        # "--use_fast_math",
+        # "--compress-mode=size",
+        # "-ffast-math",
         "--std=c++20",
     ],
-    deps = [":flashattn-sm90", ":capi-hdrs"],
+    deps = CUDA_HEADER_DEPS + [
+        ":capi-hdrs",
+        "//:flashattn-sm90-headers",
+        "//:cute",
+        "//:cutlass",
+        "//:c10_stub",
+        "//:ATen_stub",
+    ],
     alwayslink = True,
 )
 
 cc_shared_library(
     name = "flashattn_so",
     shared_lib_name = "libflashattn.so",
-    deps = [":capi", ":capi-sm90"],
+    deps = [
+        ":capi",
+        ":capi-sm90",
+        ":flashattn",
+        ":flashattn-sm90",
+    ],
+)
+
+tar(
+    name = "flashattn_archive",
+    srcs = [
+        "capi/capi.h",
+        ":flashattn_so",
+    ],
+    out = "flashattn.tar.zst",
+    args = [
+        "--options",
+        ",".join([
+            "zstd:compression-level=19",
+            "zstd:threads=16",
+        ]),
+    ],
+    compress = "zstd",
+    mtree = [
+        "flashattn/flashattn.h uid=0 gid=0 mode=0644 time=0 type=file content=$(location :capi/capi.h)",
+        "flashattn/libflashattn.so uid=0 gid=0 mode=0644 time=0 type=file content=$(location :flashattn_so)",
+    ],
+)
+
+## RELEASE
+
+RELEASE_PLATFORMS = [
+    "@llvm//platforms:linux_amd64",
+    "@llvm//platforms:linux_arm64",
+]
+
+[
+    platform_transition_filegroup(
+        name = "flashattn_archive_for_" + platform.split(":")[1],
+        srcs = [":flashattn_archive"],
+        target_platform = platform,
+    )
+    for platform in RELEASE_PLATFORMS
+]
+
+filegroup(
+    name = "flashattn_archive_for_all_platforms",
+    srcs = ["flashattn_archive_for_" + platform.split(":")[1] for platform in RELEASE_PLATFORMS],
 )
