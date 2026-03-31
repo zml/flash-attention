@@ -41,9 +41,8 @@ jobs:
         run: |
           set -x
           mkdir -p dist
-          artifact="$(find bazel-bin -type f -name 'flashattn.tar.zst' | head -n 1)"
-          test -n "${artifact}"
-          cp "${artifact}" "dist/${{ inputs.artifact-name }}"
+          ls -la bazel-bin/
+          cp "bazel-bin/flashattn.tar.zst" "dist/${{ inputs.artifact-name }}"
 
       - name: Upload artifact
         if: ${{ inputs.upload-artifact }}
