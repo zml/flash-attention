@@ -39,6 +39,7 @@ jobs:
       - name: Collect artifact
         if: ${{ inputs.upload-artifact }}
         run: |
+          set -x
           mkdir -p dist
           artifact="$(find bazel-bin -type f -name 'flashattn.tar.zst' | head -n 1)"
           test -n "${artifact}"
