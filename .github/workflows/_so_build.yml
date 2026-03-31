@@ -34,6 +34,7 @@ jobs:
             :flashattn_archive \
             --config remote \
             --config ci \
+            --remote_header=x-buildbuddy-api-key=${{ secrets.BUILDBUDDY_CI_API_KEY }}
             --platforms=${{ inputs.platform }}
 
       - name: Collect artifact
