@@ -20,6 +20,8 @@ on:
 jobs:
   build:
     name: Build ${{ inputs.artifact-name }}
+    env:
+      BUILDBUDDY_CI_API_KEY: ${{ secrets.BUILDBUDDY_CI_API_KEY }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -34,6 +36,7 @@ jobs:
             :flashattn_archive \
             --config remote \
             --config ci \
+            --remote_header=x-buildbuddy-api-key=$BUILDBUDDY_CI_API_KEY \
             --platforms=${{ inputs.platform }}
 
       - name: Collect artifact
