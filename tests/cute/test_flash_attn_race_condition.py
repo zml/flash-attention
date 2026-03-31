@@ -26,7 +26,6 @@ from flash_attn.cute.interface import (
     flash_attn_varlen_func,
     flash_attn_combine,
     _flash_attn_bwd,
-    _get_device_capability,
 )
 
 
@@ -408,11 +407,6 @@ def test_flash_attn_varlen_output(
     local = local_enum > 0
     if local and causal:
         pytest.skip()
-    is_sm90 = _get_device_capability() == 9
-    if is_sm90 and local:
-        pytest.xfail("bwd local attention not supported on sm90")
-    if is_sm90 and deterministic:
-        pytest.xfail("bwd deterministic not supported on sm90")
     if (
         causal or local
     ):  # Right now reference only supports causal attention with seqlen_k == seqlen_q
@@ -651,7 +645,6 @@ def test_flash_attn_varlen_output(
             and not attention_chunk != 0
             and dv == d
             and not has_learnable_sink
-            and not is_sm90
             # and False
         ):
             g_unpad = torch.randn_like(out_unpad)
