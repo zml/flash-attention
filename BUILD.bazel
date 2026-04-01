@@ -230,6 +230,7 @@ cuda_library(
         # "--use_fast_math",
         # "--compress-mode=size",
         # "-ffast-math",
+        "-O3",
     ],
     # archs = cuda_archs_loose_intersection(["9.0a"], ["8.0", "8.6", "8.9", "9.0", "10.0", "10.1", "11.0", "12.0"]),
     archs = ["sm_90a"],
@@ -290,6 +291,7 @@ cc_library(
         # "--compress-mode=size",
         # "-ffast-math",
         "--std=c++20",
+        "-O3",
     ],
     deps = CUDA_HEADER_DEPS + [
         ":capi-hdrs",
