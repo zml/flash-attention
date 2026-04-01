@@ -231,8 +231,8 @@ struct CollectiveEpilogueFwd {
         auto [m_block, bidh, bidb, split_idx] = block_coord;
         int num_splits = get<4>(params.shape_O_packed);
         if constexpr (Split && Varlen) {
-            uint32_t num_splits_dynamic_u = reinterpret_cast<uint32_t const&>(split_idx) >> 16; // first 16 bits are for num_splits
-            int num_splits_dynamic = reinterpret_cast<int&>(num_splits_dynamic_u);
+            uint32_t num_splits_dynamic_u = static_cast<uint32_t>(split_idx) >> 16; // first 16 bits are for num_splits
+            int num_splits_dynamic = static_cast<int>(num_splits_dynamic_u);
             num_splits = num_splits_dynamic > 0 ? num_splits_dynamic : num_splits;
             split_idx &= 0x0000FFFF;  // Only use the lower 16 bits of split_idx
         }
@@ -424,8 +424,8 @@ struct CollectiveEpilogueFwd {
         auto [m_block, bidh, bidb, split_idx] = block_coord;
         int num_splits = get<4>(params.shape_O_packed);
         if constexpr (Split && Varlen) {
-            uint32_t num_splits_dynamic_u = reinterpret_cast<uint32_t const&>(split_idx) >> 16; // first 16 bits are for num_splits
-            int num_splits_dynamic = reinterpret_cast<int&>(num_splits_dynamic_u);
+            uint32_t num_splits_dynamic_u = static_cast<uint32_t>(split_idx) >> 16; // first 16 bits are for num_splits
+            int num_splits_dynamic = static_cast<int>(num_splits_dynamic_u);
             num_splits = num_splits_dynamic > 0 ? num_splits_dynamic : num_splits;
             split_idx &= 0x0000FFFF;  // Only use the lower 16 bits of split_idx
         }

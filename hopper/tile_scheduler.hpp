@@ -427,13 +427,12 @@ public:
                 return {block, bidh, bidb, 0 /*split_idx*/};
             } else {
                 // the top 8 bits of bidh store num_splits and the next 8 bits store split_idx
-                // reinterpret_cast to uint32_t to make sure we're not doing sign extension when we shift
-                uint32_t bidh_packed = reinterpret_cast<uint32_t const&>(bidh);
-                uint32_t bidh_actual_u = bidh_packed & 0x0000FFFF;
-                int bidh_actual = reinterpret_cast<int&>(bidh_actual_u);
+                uint32_t bidh_packed = static_cast<uint32_t>(bidh);
+                uint32_t bidh_actual_u = bidh_packed & 0x0000FFFFu;
+                int bidh_actual = static_cast<int>(bidh_actual_u);
                 // Use the top 16 bits of split_idx to store num_splits and the next 16 bits to store split_idx
-                uint32_t split_idx_u = ((bidh_packed & 0x00FF0000) >> 16) + ((bidh_packed & 0xFF000000) >> 8);
-                int split_idx = reinterpret_cast<int&>(split_idx_u);
+                uint32_t split_idx_u = ((bidh_packed & 0x00FF0000u) >> 16) | ((bidh_packed & 0xFF000000u) >> 8);
+                int split_idx = static_cast<int>(split_idx_u);
                 // int bidh_actual = params.nsplits_divmod.divmod(split_idx, bidh);
                 // if (threadIdx.x == 128) {
                 //     printf("blockIdx.x = %d, bidb = %d, bidh = %d, bidh_actual = %d, split_idx = %d\n", blockIdx.x, bidb, bidh, bidh_actual, split_idx);
@@ -534,12 +533,13 @@ public:
             // int bidh_actual, split_idx;
             // split_idx = params.head_divmod.divmod(bidh_actual, bidh);
             // Use the top 8 bits to store num_splits and the next 8 bits to store split_idx
-            // reinterpret_cast to uint32_t to make sure we're not doing sign extension when we shift
-            uint32_t bidh_packed = reinterpret_cast<uint32_t&>(bidh_actual) + (reinterpret_cast<uint32_t&>(split_idx) << 16) + (reinterpret_cast<uint32_t&>(num_splits) << 24);
+            uint32_t bidh_packed = static_cast<uint32_t>(bidh_actual)
+                | (static_cast<uint32_t>(split_idx) << 16)
+                | (static_cast<uint32_t>(num_splits) << 24);
             // if (threadIdx.x == 0) {
             //     printf("blockIdx.x = %d, group_start_tiled = %d, bidb = %d, batch_idx_in_group = %d, mh_block = %d, num_m_blocks = %d, bidh = %d, bidh_actual = %d, split_idx = %d, num_splits = %d, bidh_packed = %d\n", blockIdx.x, group_start_tile, bidb, batch_idx_in_group, mh_block, num_m_blocks, bidh, bidh_actual, split_idx, num_splits, bidh_packed);
             // }
-            bidh = reinterpret_cast<int&>(bidh_packed);
+            bidh = static_cast<int>(bidh_packed);
         }
         // if (blockIdx.x <= 9 && threadIdx.x == 0) {
         //     printf("Before returning, blockIdx.x = %d, threadIdx.x = %d, group_start_tile = %d, batch_idx_in_group = %d, bidb = %d, num_m_blocks = %d, next_tile_idx = %d, group_end_tile = %d, m_blocks_in_group = %d, mh_block = %d, bidh = %d, block = %d\n", blockIdx.x, threadIdx.x, group_start_tile, batch_idx_in_group, bidb, num_m_blocks, next_tile_idx, group_end_tile, m_blocks_in_group, mh_block, bidh, block);

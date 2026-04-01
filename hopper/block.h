@@ -52,8 +52,8 @@ struct BlockMN {
         
         // if (threadIdx.x == 128) { printf("Inside, bid.x = %d, bid.y = %d, bid.z = %d, split_idx = %d, n_block_min: %d, n_block_max: %d\n", blockIdx.x, blockIdx.y, blockIdx.z, split_idx, n_block_min, n_block_max); }
         if constexpr (Split) {
-            uint32_t num_splits_dynamic_u = reinterpret_cast<uint32_t const&>(split_idx) >> 16; // first 16 bits are for num_splits
-            int num_splits_dynamic = reinterpret_cast<int&>(num_splits_dynamic_u);
+            uint32_t num_splits_dynamic_u = static_cast<uint32_t>(split_idx) >> 16; // first 16 bits are for num_splits
+            int num_splits_dynamic = static_cast<int>(num_splits_dynamic_u);
             int split_idx_actual = split_idx & 0x0000FFFF;
             int num_splits_actual = num_splits_dynamic > 0 ? num_splits_dynamic : num_splits;
             int num_n_blocks_per_split = n_block_max <= n_block_min ? 0 : cute::ceil_div(n_block_max - n_block_min, num_splits_actual);
