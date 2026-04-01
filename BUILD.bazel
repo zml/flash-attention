@@ -1,5 +1,5 @@
 load("@bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
-load("@llvm//:cuda.bzl", "cuda_library")
+load(":cuda_library.bzl", "cuda_library")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_shared_library.bzl", "cc_shared_library")
 load("@tar.bzl//tar:tar.bzl", "tar")
@@ -53,6 +53,7 @@ cc_library(
 )
 
 FA2_ARCHS = ["sm_80", "sm_86", "sm_89", "sm_100", "sm_120", "sm_121"]
+FA2_ARCHS = ["sm_80", "sm_120"]
 
 CUDA_HEADER_DEPS = [
     "@cuda//cuda:cuda_headers",

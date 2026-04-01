@@ -11,7 +11,9 @@ bazel_dep(name = "tar.bzl", version = "0.9.0")
 bazel_dep(name = "llvm", version = "0.6.8")
 git_override(
     module_name = "llvm",
-    commit = "8d834a7e878a82e5a25776c222ce14704b3d2986",
+    # commit = "8d834a7e878a82e5a25776c222ce14704b3d2986", # cuda
+    # commit = "9e96ddefc30d6fb15fa5acef14df11148e114653", # main
+    commit = "7fb2937efdd2599451e16c098fad323f4003e521", # stdlib++-isystem
     remote = "https://github.com/cerisier/toolchains_llvm_bootstrapped.git",
 )
 # local_path_override(

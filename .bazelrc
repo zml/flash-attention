@@ -66,3 +66,7 @@ common:release  --compilation_mode=opt
 
 # Print test errors in the console
 test            --test_output=errors
+
+# is_reference specialization in cutlass
+build           --copt='-Wno-invalid-specialization'
+build           --override_module=cuda_toolkit=../cuda_toolkit/
