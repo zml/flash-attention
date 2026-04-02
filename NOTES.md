@@ -472,3 +472,41 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
   - The best crafted correctness inputs so far are:
     - `uniform_const_v` for an exact constant-output oracle
     - `uniform_ramp_v` for a structured nontrivial oracle
+
+## 2026-04-02 Untouched Buffer Check
+
+- Added `FA3_REPRO_DEBUG`-guarded sentinel initialization and dumps for:
+  - `out`
+  - `softmax_lse`
+- Rebuilt with invocation:
+  - `b2c44bcd-7273-46af-90ea-d2f33c0210ae`
+- Real-path non-paged exact oracle:
+  - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0 --input_mode=uniform_const_v --dump_count=8`
+  - Sentinels:
+    - `out = -0.5`
+    - `softmax_lse = -123`
+  - Result:
+    - `sched 0 1`
+    - sampled `out` remains `-0.5`
+    - sampled `softmax_lse` remains `-123`
+  - Conclusion:
+    - clang-built FA3 is not computing zero and storing it on this path
+    - it is leaving both output and LSE buffers untouched
+- Removed GQA / `pack_gqa` as a cause:
+  - same oracle but `--num_heads=32 --num_heads_k=32`
+  - `pack_gqa=0`
+  - result is still untouched sentinels in both `out` and `softmax_lse`
+- Dense nearby case changes symptom instead of fixing correctness:
+  - same oracle but `--varlen=0 --num_heads=32 --num_heads_k=8`
+  - result:
+    - `CUDA error: unspecified launch failure`
+- Smaller varlen non-GQA case also reproduces untouched outputs:
+  - `--num_heads=1 --num_heads_k=1 --varlen=1`
+  - result:
+    - `sched 0 1`
+    - `out` and `softmax_lse` both remain at their sentinels
+- Current practical conclusion:
+  - The clang FA3 divergence is now narrower than “wrong math.”
+  - On the real non-paged varlen `num_splits=0` path, the kernel launch sequence completes without runtime error but never writes `out` or `softmax_lse`.
+  - This is not caused by GQA packing.
+  - The nearest dense path still crashes, so the likely boundary remains the SM90 FA3 varlen launch / execution path under clang.

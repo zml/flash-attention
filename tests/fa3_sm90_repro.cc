@@ -400,6 +400,11 @@ bool ReproDebugEnabled() {
     return env != nullptr && env[0] != '\0' && env[0] != '0';
 }
 
+template <typename T>
+void FillHost(std::vector<T>* out, T value) {
+    std::fill(out->begin(), out->end(), value);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -582,14 +587,22 @@ int main(int argc, char** argv) {
 #endif
 
     std::vector<uint16_t> h_out(out_elems);
+    std::vector<float> h_lse(lse_elems, 0.0f);
     std::vector<float> got(out_elems);
     std::vector<float> prev_run(out_elems, 0.0f);
     float max_repeat_delta = 0.0f;
     std::vector<int> h_sched(sched_elems, 0);
+    std::vector<uint16_t> h_out_sentinel(out_elems, EncodeFloat(-0.5f, opts.bf16));
+    std::vector<float> h_lse_sentinel(lse_elems, -123.0f);
 
     for (int iter = 0; iter < opts.iters; ++iter) {
-        CUDA_CHECK(cudaMemset(d_out, 0, out_elems * sizeof(uint16_t)));
-        CUDA_CHECK(cudaMemset(d_lse, 0, lse_elems * sizeof(float)));
+        if (!opts.use_fa2 && ReproDebugEnabled()) {
+            CUDA_CHECK(cudaMemcpy(d_out, h_out_sentinel.data(), out_elems * sizeof(uint16_t), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(d_lse, h_lse_sentinel.data(), lse_elems * sizeof(float), cudaMemcpyHostToDevice));
+        } else {
+            CUDA_CHECK(cudaMemset(d_out, 0, out_elems * sizeof(uint16_t)));
+            CUDA_CHECK(cudaMemset(d_lse, 0, lse_elems * sizeof(float)));
+        }
         CUDA_CHECK(cudaMemset(d_sched, 0, sched_elems * sizeof(int)));
         if (opts.use_fa2) {
 #ifdef FA_REPRO_FA3_ONLY
@@ -663,6 +676,7 @@ int main(int argc, char** argv) {
             std::cout << "\n";
         }
         CUDA_CHECK(cudaMemcpy(h_out.data(), d_out, out_elems * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_lse.data(), d_lse, lse_elems * sizeof(float), cudaMemcpyDeviceToHost));
         got = DecodeToFloat(h_out, opts.bf16);
         if (iter > 0) {
             for (size_t i = 0; i < got.size(); ++i) {
@@ -717,6 +731,13 @@ int main(int argc, char** argv) {
         std::cout << " " << got[i];
     }
     std::cout << "\n";
+    if (!opts.use_fa2 && ReproDebugEnabled()) {
+        std::cout << "lse_sample";
+        for (int i = 0; i < std::min<int>(opts.dump_count, h_lse.size()); ++i) {
+            std::cout << " " << h_lse[i];
+        }
+        std::cout << "\n";
+    }
 
     CUDA_CHECK(cudaFree(d_q));
     CUDA_CHECK(cudaFree(d_k));
