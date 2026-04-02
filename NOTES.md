@@ -563,3 +563,31 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
 - Conclusion:
   - disabling `@llvm` registration removed the only visible Bazel C++ toolchain on this branch
   - installing system `clang` is not enough by itself; Bazel still needs an explicitly registered non-LLVM C++ toolchain so nvcc can use it as the host compiler
+
+## 2026-04-02 NVCC A/B Confirmation
+
+- For the `rules_cuda`/nvcc path, remote execution is not usable because the detected host compiler path is local to this machine.
+- The working local build invocation is:
+  - `bazel --batch build --jobs=1000 --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 --repo_env=BAZEL_NO_APPLE_CPP_TOOLCHAIN=0 --repo_env=BAZEL_DO_NOT_DETECT_SWIFT_TOOLCHAIN=0 --repo_env=CC=/usr/bin/clang-18 --repo_env=CXX=/usr/bin/clang++-18 //:fa3_sm90_full_repro`
+- Installed host toolchain packages for the local nvcc build:
+  - `clang-18`
+  - `g++-10`
+- Exact real-path oracle run under the locally built nvcc binary:
+  - `FA3_REPRO_DEBUG=1 ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0 --input_mode=uniform_const_v --dump_count=8`
+- Result under nvcc:
+  - `PASS`
+  - `compare max_abs=0.000000`
+  - sample output is exact `0.125000`
+  - `lse_sample` is sane and non-sentinel:
+    - `0.000000 0.693147 1.098612 1.386294 1.609438 1.791759 1.945910 2.079442`
+  - scheduler becomes `sched 16 1`
+- Compare that to the clang-built result on the same oracle:
+  - output buffer remained untouched at the sentinel value
+  - `softmax_lse` remained untouched at the sentinel value
+  - scheduler was only `sched 0 1`
+- Current practical conclusion:
+  - We now have direct A/B proof on the same machine and same real FA3 call surface:
+    - nvcc build: correct
+    - clang build: broken
+  - The failure is not in the harness or in the mathematical setup of the repro input.
+  - The remaining root-cause surface is specifically the clang-built SM90 FA3 varlen execution path.
