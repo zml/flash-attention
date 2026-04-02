@@ -340,11 +340,6 @@ bool ReproDebugEnabled() {
     return env != nullptr && env[0] != '\0' && env[0] != '0';
 }
 
-bool ReproSkipSchedPrepEnabled() {
-    const char* env = std::getenv("FA3_REPRO_SKIP_SCHED_PREP");
-    return env != nullptr && env[0] != '\0' && env[0] != '0';
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -522,12 +517,6 @@ int main(int argc, char** argv) {
         CUDA_CHECK(cudaMemset(d_out, 0, out_elems * sizeof(uint16_t)));
         CUDA_CHECK(cudaMemset(d_lse, 0, lse_elems * sizeof(float)));
         CUDA_CHECK(cudaMemset(d_sched, 0, sched_elems * sizeof(int)));
-        if (!opts.use_fa2 && ReproSkipSchedPrepEnabled() && sched_elems >= 2) {
-            h_sched.assign(sched_elems, 0);
-            h_sched[0] = 0;
-            h_sched[1] = 1;
-            CUDA_CHECK(cudaMemcpy(d_sched, h_sched.data(), sched_elems * sizeof(int), cudaMemcpyHostToDevice));
-        }
         if (opts.use_fa2) {
 #ifdef FA_REPRO_FA3_ONLY
             std::cerr << "FA2 path is not available in this binary\n";

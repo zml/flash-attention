@@ -332,9 +332,7 @@ public:
             }
             if (!SingleProducerWarp && warp_idx_in_warpgroup != 0) { scheduler.init_consumer(); }
 
-            // Repro cut: disable GDC wait to isolate whether griddepcontrol.wait is
-            // the source of the clang-only varlen failure mode.
-            // cutlass::arch::wait_on_dependent_grids();
+            cutlass::arch::wait_on_dependent_grids();
 
             // Load Q, K, V
             for (auto work_tile_info = SingleProducerWarp || warp_idx_in_warpgroup == 0 ? scheduler.template get_initial_work</*IsProducerWarp=*/true>(params.scheduler) : scheduler.template get_initial_work</*IsProducerWarp=*/false>(params.scheduler);

@@ -378,3 +378,44 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
 - Conclusion:
   - `griddepcontrol.wait` alone is not sufficient to explain either symptom.
   - The remaining highest-value compiler/runtime boundary is the broader SM90 GDC/PDL enablement path itself, not just the single wait instruction.
+
+## 2026-04-02 Return To Real Path
+
+- Removed the reduction-only hacks and restored the real SM90 FA3 path:
+  - restored normal `UsePersistentScheduler` selection in `hopper/flash_fwd_launch_template.h`
+  - restored `cutlass::arch::wait_on_dependent_grids()` in `hopper/flash_fwd_kernel_sm90.h`
+  - restored `CUTLASS_ENABLE_GDC_FOR_SM90` in `BUILD.bazel`
+  - removed the temporary `FA3_REPRO_SKIP_SCHED_PREP` bypass path from `capi/capi_sm90.cc` and `tests/fa3_sm90_repro.cc`
+- Rebuilt the real path with invocation:
+  - `64f1d6c1-9001-4dcd-9625-2d5ed7baae1a`
+- Exact llama-like non-crashing FA3 surface, non-paged:
+  - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=2048 --seqlen_k=2048 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0 --skip_ref=1 --dump_count=16`
+  - Result:
+    - no crash
+    - launch uses the real path again:
+      - `persistent=1`
+      - `pack_gqa=1`
+      - `use_dynamic_split=1`
+    - sampled output is all zeros
+    - scheduler metadata remains `sched 0 1`
+- Exact llama-like non-crashing FA3 surface, paged KV:
+  - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=2048 --seqlen_k=2048 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=1024 --num_splits=0 --skip_ref=1 --dump_count=16`
+  - Result:
+    - no crash
+    - sampled output is all zeros
+    - scheduler metadata remains `sched 0 1`
+- Smaller real-path reference-enabled repros:
+  - non-paged:
+    - `--batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0`
+  - paged:
+    - `--batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=16 --num_splits=0`
+  - Result for both:
+    - deterministic all-zero output
+    - same reference failure:
+      - `max_abs=0.250000`
+      - `max_rel=1.000000`
+      - `mean_abs=0.025934`
+- Current practical conclusion:
+  - The real llama-like FA3 forward path is now reproduced again, not just the trimmed kernel path.
+  - The non-crashing `num_splits=0` varlen path still produces deterministic zeros on both paged and non-paged inputs.
+  - We can now continue wrong-output analysis on the real path instead of the trimmed one.
