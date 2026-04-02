@@ -310,7 +310,6 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
     - SM90 FA3
     - clang build
     - varlen forward path
-    - causal
     - batch=1
     - seqlen_q=64
     - seqlen_k=64
@@ -318,3 +317,24 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
     - num_heads_k=1
     - head_dim=64
   - This points away from scheduler metadata and toward the varlen kernel specialization / mainloop path itself under clang.
+- Additional reduction:
+  - The same minimal repro still returns all zeros with `--causal=0`.
+  - So causality is not required.
+- Critical split on the minimal repro:
+  - `--num_splits=0`:
+    - `use_dynamic_split=1`
+    - `num_splits_dyn` is non-null
+    - launch stays `persistent=0`, `grid=(1,1,1)`, `block=(256,1,1)`
+    - result: deterministic all-zero output
+  - `--num_splits=1`:
+    - `use_dynamic_split=0`
+    - `num_splits_dyn=(nil)`
+    - launch still stays `persistent=0`, `grid=(1,1,1)`, `block=(256,1,1)`
+    - result: `CUDA error: unspecified launch failure`
+- Current interpretation:
+  - On the reduced `SingleTileScheduler` repro, the zeros-vs-crash difference survives even after removing paged KV, GQA, and the persistent scheduler.
+  - The remaining material runtime difference is the main-kernel PDL launch condition:
+    - `launch_with_pdl=true` when varlen + `num_splits_dynamic_ptr` is present
+    - `launch_with_pdl=false` when it is absent
+  - That makes the strongest current root-cause hypothesis:
+    - clang-generated SM90 FA3 varlen kernel behavior around the main-kernel PDL path, not scheduler metadata layout.
