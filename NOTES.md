@@ -627,3 +627,19 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
   - `rules_cuda + clang` does **not** reproduce the earlier broken LLVM-toolchain behavior on this real FA3 path
   - for this repro, `rules_cuda + clang` behaves like the working `rules_cuda + nvcc` build, not like the original broken clang path
   - that makes `rules_cuda` a viable compiler path for continued repro work on this machine
+
+## 2026-04-02 rules_cuda Clang CUDA Invocation
+
+- Repro build command:
+  - `bazel --batch build --jobs=1000 --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 --repo_env=BAZEL_NO_APPLE_CPP_TOOLCHAIN=0 --repo_env=BAZEL_DO_NOT_DETECT_SWIFT_TOOLCHAIN=0 --repo_env=CC=/root/flash-attention/tools/clang22-wrapper --repo_env=CXX=/root/flash-attention/tools/clang22xx-wrapper --repo_env=CUDA_CLANG_PATH=/root/flash-attention/tools/clang22-wrapper --@rules_cuda//cuda:compiler=clang //:fa3_sm90_full_repro`
+- Wrapper scripts:
+  - `tools/clang22-wrapper`
+    - `#!/bin/bash`
+    - `exec -a clang /root/toolchains/llvm-22.1.0-musl/bin/llvm "$@"`
+  - `tools/clang22xx-wrapper`
+    - `#!/bin/bash`
+    - `exec -a clang++ /root/toolchains/llvm-22.1.0-musl/bin/llvm "$@"`
+- Example CUDA compile action from `bazel aquery` for `hopper/instantiations/flash_fwd_hdim128_bf16_sm90.cu`:
+  - `/root/flash-attention/tools/clang22-wrapper -x cu --cuda-gpu-arch=sm_90a --cuda-path=external/rules_cuda++toolchain+cuda_nvvm_v13.0.88/nvvm --no-offload-new-driver -frandom-seed=bazel-out/k8-opt/bin/_objs/flashattn-sm90/flash_fwd_hdim128_bf16_sm90.o -DFLASHATTENTION_DISABLE_BACKWARD -DFLASHATTENTION_DISABLE_DROPOUT -DFLASHATTENTION_DISABLE_SOFTCAP -DFLASHATTENTION_VARLEN_ONLY -DFLASHATTENTION_DISABLE_SM8x -DFLASHATTENTION_DISABLE_APPENDKV -DFLASHATTENTION_DISABLE_CLUSTER -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED -DCUTLASS_ENABLE_GDC_FOR_SM90 -Iexternal/rules_cuda++toolchain+cuda_cudart_v13.0.96/cudart/include -Iexternal/rules_cuda++toolchain+cuda_nvcc_v13.0.88/nvcc/include -Iexternal/rules_cuda++toolchain+cuda_nvvm_v13.0.88/nvvm/include -Iexternal/rules_cuda++toolchain+cuda_cccl_v13.0.85/cccl/include -Iexternal/rules_cuda++toolchain+cuda_crt_v13.0.88/crt/include -Iexternal/+http_archive+cccl/libcudacxx/include -Iexternal/rules_cuda++toolchain+cuda_curand_v10.4.0.35/curand/include -Icsrc -Icsrc/cutlass/include -Icsrc/flash_attn/src -O2 -DNDEBUG -fPIC -c hopper/instantiations/flash_fwd_hdim128_bf16_sm90.cu -o bazel-out/k8-opt/bin/_objs/flashattn-sm90/flash_fwd_hdim128_bf16_sm90.o`
+- Action environment:
+  - `PATH=/root/flash-attention/tools:external/rules_cuda++toolchain+cuda_nvvm_v13.0.88/nvvm/nvvm/bin:external/rules_cuda++toolchain+cuda_nvcc_v13.0.88/nvcc/bin:/bin:/usr/bin:/usr/local/bin`
