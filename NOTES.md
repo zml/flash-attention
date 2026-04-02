@@ -56,6 +56,15 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
   - Same full-target geometry with paged KV disabled:
     - `--iters=2 --batch=1 --seqlen_q=8 --seqlen_k=8 --num_heads=4 --num_heads_k=4 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0`
     - Result: same launch failure at the same line
+  - Minimal dense/non-paged/non-causal config:
+    - `--batch=1 --seqlen_q=1 --seqlen_k=1 --num_heads=4 --num_heads_k=4 --head_dim=128 --causal=0 --varlen=0 --paged_kv=0 --skip_ref=1`
+    - Result: same launch failure at `tests/fa3_sm90_repro.cc:482`
+  - Minimal varlen/non-paged/non-causal config:
+    - `--batch=1 --seqlen_q=1 --seqlen_k=1 --num_heads=4 --num_heads_k=4 --head_dim=128 --causal=0 --varlen=1 --paged_kv=0 --skip_ref=1`
+    - Result: same launch failure at `tests/fa3_sm90_repro.cc:482`
+  - Minimal varlen/paged/non-causal config:
+    - `--batch=1 --seqlen_q=1 --seqlen_k=1 --num_heads=4 --num_heads_k=4 --head_dim=128 --causal=0 --varlen=1 --paged_kv=1 --page_size=16 --skip_ref=1`
+    - Result: same launch failure at `tests/fa3_sm90_repro.cc:482`
   - Custom-llama-like head geometry:
     - `--iters=1 --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=1024`
     - Result: same launch failure at the same line
@@ -67,6 +76,7 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
   - Using the Bazel-downloaded CUDA 13 runtime resolves the loader error, then the FA3 kernel crashes.
   - CUDA redist path used so far:
     - `/root/.cache/bazel/_bazel_root/cache/repos/v1/contents/b84070b7338ac3d07a942ea84b3d3ea67db8e867f439a345cf9acd7e9b9eeef2/079b9eaf-27d6-4139-9001-7b31e6d79fed/lib`
+  - `bazel aquery //:fa3_sm90_full_repro` confirms the target is built through the LLVM CUDA toolchain and uses `clang++` from the Bazel-managed LLVM toolchain inputs.
 
 ## Custom Llama IR Clues
 
@@ -96,9 +106,10 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
    - `seqused_k`
    - `causal=0|1`
    - `num_heads=32`, `num_heads_k=8`, `head_dim=128`
-4. The exact IR-sized paged-KV config is now directly runnable, and it still crashes; next step is to shrink around that surface until something survives the first sync.
-5. If a non-crashing clang config is found, compare against CPU reference immediately and record the first wrong-output seed/config.
-6. If every full-target clang config still crashes, narrow the failure to a smaller C API surface change or kernel family and keep checkpointing often.
+4. The exact IR-sized paged-KV config is now directly runnable, and it still crashes.
+5. Shrinking below that surface still crashes, including the smallest dense/non-paged/non-causal case tested so far.
+6. Next useful control is FA2 through the same C API harness, to prove the harness path is sound on the same machine while FA3 clang remains broken.
+7. If a non-crashing clang FA3 config is found, compare against CPU reference immediately and record the first wrong-output seed/config.
 
 ## Open Questions
 
