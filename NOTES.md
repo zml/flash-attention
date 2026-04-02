@@ -169,3 +169,67 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
 - FA2 control status:
   - Tried building `//:fa2_llama_repro`, but the reduced FA2 target currently fails to link because it depends on the full `:capi` dispatcher, which references many FA2 kernels not present in the reduced FA2 library.
   - This is a separate build-system issue in the control target, not yet a runtime result.
+
+## 2026-04-02 Scheduler / PDL Narrowing
+
+- Added scheduler buffer dumps in `tests/fa3_sm90_repro.cc` under `FA3_REPRO_DEBUG=1`.
+- Added a temporary escape hatch in `capi/capi_sm90.cc`:
+  - `FA3_REPRO_SKIP_SCHED_PREP=1`
+  - This sets `params.skip_scheduler_metadata_computation = true`
+  - The harness then preloads `scheduler_metadata` with `[0, 1, ...]` so the main kernel sees:
+    - semaphore = `0`
+    - `num_splits_dynamic = 1`
+- Small paged-KV dynamic-split repro with scheduler prep enabled:
+  - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=16 --num_splits=0 --dump_count=8`
+  - Observed debug line:
+    - `paged_kv=1 pagedkv_tma=0 num_splits=1 use_dynamic_split=1 scheduler_needs_semaphore=1 pack_gqa=1 skip_sched_meta=0 total_k=64`
+  - Scheduler dump after each iteration:
+    - `sched 0 1`
+    - `sched 0 1`
+    - `sched 0 1`
+  - Result:
+    - no crash
+    - output remains deterministically all zeros
+    - semaphore never advances beyond `0`
+- Main-kernel PDL experiment:
+  - Patched `hopper/flash_fwd_launch_template.h` so the main `cutlass::kernel_launch<AttnKernel>(...)` uses `launch_with_pdl=false`
+  - Result:
+    - the same small dynamic-split paged-KV repro now crashes with `CUDA error: unspecified launch failure`
+    - the exact llama-like paged-KV case (`2048 x 32 x 128`, `2048 x 8 x 128`, `page_size=1024`, `num_splits=0`) also crashes
+  - Interpretation:
+    - PDL changes the symptom:
+      - main-kernel PDL on => wrong all-zero outputs
+      - main-kernel PDL off => launch failure
+- Scheduler-prep bypass experiment with main-kernel PDL restored:
+  - Restored the original main-kernel PDL expression.
+  - Kept prep-kernel PDL disabled:
+    - `prepare_varlen_num_blocks(..., false /*enable_pdl*/)`
+  - Built with invocation:
+    - `ab2ac4cb-0093-4d63-b537-071f34f11b0f`
+  - Ran:
+    - `FA3_REPRO_DEBUG=1 FA3_REPRO_SKIP_SCHED_PREP=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=16 --num_splits=0 --dump_count=8`
+  - Result:
+    - `CUDA error: unspecified launch failure`
+  - Interpretation:
+    - the failure is not only in `prepare_varlen_num_blocks`
+    - the crash survives when scheduler prep is bypassed and the scheduler buffer is host-seeded
+- Current best narrowing:
+  - The reproducible wrong-output surface is:
+    - FA3
+    - SM90
+    - clang-built binary
+    - varlen + paged-KV
+    - dynamic-split scheduler path
+  - The remaining likely root-cause area is the main persistent scheduler kernel path, especially its interaction with PDL under clang-generated Hopper code.
+
+## Immediate Next Step
+
+1. Add launch-level debug prints in `hopper/flash_fwd_launch_template.h`:
+   - `num_blocks_m`
+   - grid and block dims
+   - shared memory size
+   - `tile_count_semaphore` pointer
+   - `num_splits_dynamic_ptr` pointer
+   - whether the scheduler class is persistent
+2. Rebuild and rerun the small paged-KV dynamic-split repro with `FA3_REPRO_DEBUG=1`.
+3. Use that data to decide whether the main kernel is being launched with inconsistent scheduler metadata or whether the problem is already deeper in clang-generated device code.

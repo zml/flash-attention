@@ -370,6 +370,14 @@ inline bool fa3_repro_debug_enabled() {
     return enabled;
 }
 
+inline bool fa3_repro_skip_sched_prep_enabled() {
+    static bool enabled = [] {
+        const char* env = std::getenv("FA3_REPRO_SKIP_SCHED_PREP");
+        return env != nullptr && env[0] != '\0' && env[0] != '0';
+    }();
+    return enabled;
+}
+
 inline int round_up_headdim(int head_size) {
     #ifndef FLASHATTENTION_DISABLE_HDIM64
     if (head_size <= 64) { return 64; }
@@ -730,8 +738,7 @@ mha_fwd(const FlashattnTensor *q, // (b, s_q, h, d) or (total_q, h, d) if there 
 
     if (scheduler_needs_semaphore || use_dynamic_split) {
         int metadata_size = int(scheduler_needs_semaphore) + int(use_dynamic_split) * params.b;
-        //params.skip_scheduler_metadata_computation = scheduler_metadata_.has_value();
-        params.skip_scheduler_metadata_computation = false;
+        params.skip_scheduler_metadata_computation = fa3_repro_skip_sched_prep_enabled();
         //if (numElements(scheduler_metadata_) != metadata_size) {
         //    fprintf(stderr, "scheduler_metadata_ requires %d bytes, allocated %ld bytes\n", metadata_size, numElements(scheduler_metadata_));
         //    CAPI_CHECK(false, "");

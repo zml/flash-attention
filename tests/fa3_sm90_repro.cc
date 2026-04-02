@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -334,6 +335,16 @@ bool HasNaN(const std::vector<float>& x) {
     return false;
 }
 
+bool ReproDebugEnabled() {
+    const char* env = std::getenv("FA3_REPRO_DEBUG");
+    return env != nullptr && env[0] != '\0' && env[0] != '0';
+}
+
+bool ReproSkipSchedPrepEnabled() {
+    const char* env = std::getenv("FA3_REPRO_SKIP_SCHED_PREP");
+    return env != nullptr && env[0] != '\0' && env[0] != '0';
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -505,11 +516,18 @@ int main(int argc, char** argv) {
     std::vector<float> got(out_elems);
     std::vector<float> prev_run(out_elems, 0.0f);
     float max_repeat_delta = 0.0f;
+    std::vector<int> h_sched(sched_elems, 0);
 
     for (int iter = 0; iter < opts.iters; ++iter) {
         CUDA_CHECK(cudaMemset(d_out, 0, out_elems * sizeof(uint16_t)));
         CUDA_CHECK(cudaMemset(d_lse, 0, lse_elems * sizeof(float)));
         CUDA_CHECK(cudaMemset(d_sched, 0, sched_elems * sizeof(int)));
+        if (!opts.use_fa2 && ReproSkipSchedPrepEnabled() && sched_elems >= 2) {
+            h_sched.assign(sched_elems, 0);
+            h_sched[0] = 0;
+            h_sched[1] = 1;
+            CUDA_CHECK(cudaMemcpy(d_sched, h_sched.data(), sched_elems * sizeof(int), cudaMemcpyHostToDevice));
+        }
         if (opts.use_fa2) {
 #ifdef FA_REPRO_FA3_ONLY
             std::cerr << "FA2 path is not available in this binary\n";
@@ -573,6 +591,14 @@ int main(int argc, char** argv) {
 #endif
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaDeviceSynchronize());
+        if (!opts.use_fa2 && ReproDebugEnabled()) {
+            CUDA_CHECK(cudaMemcpy(h_sched.data(), d_sched, sched_elems * sizeof(int), cudaMemcpyDeviceToHost));
+            std::cout << "sched";
+            for (size_t i = 0; i < h_sched.size(); ++i) {
+                std::cout << " " << h_sched[i];
+            }
+            std::cout << "\n";
+        }
         CUDA_CHECK(cudaMemcpy(h_out.data(), d_out, out_elems * sizeof(uint16_t), cudaMemcpyDeviceToHost));
         got = DecodeToFloat(h_out, opts.bf16);
         if (iter > 0) {
