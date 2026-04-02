@@ -53,7 +53,7 @@ cc_library(
     includes = ["csrc/flash_attn/src/"],
 )
 
-FA2_ARCHS = ["sm_80", "sm_86", "sm_89", "sm_100", "sm_120", "sm_121"]
+FA2_ARCHS = ["sm_90a"]
 
 CUDA_HEADER_DEPS = [
     "@cuda//cuda:cuda_headers",

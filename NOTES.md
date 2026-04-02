@@ -419,3 +419,56 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
   - The real llama-like FA3 forward path is now reproduced again, not just the trimmed kernel path.
   - The non-crashing `num_splits=0` varlen path still produces deterministic zeros on both paged and non-paged inputs.
   - We can now continue wrong-output analysis on the real path instead of the trimmed one.
+
+## 2026-04-02 FA2 Control And Crafted Inputs
+
+- Narrowed `FA2_ARCHS` in `BUILD.bazel` to `["sm_90a"]` so the FA2 control path only builds the H100 target we are actually using.
+- Rebuilt with invocation:
+  - `545c5011-cf7c-4383-ad2c-4d3e0375ffa8`
+- FA2 real-path non-paged control:
+  - `LD_LIBRARY_PATH=... ./bazel-bin/fa2_control_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0 --dump_count=8`
+  - Result:
+    - `PASS`
+    - `max_abs=0.000719`
+    - `max_rel=0.003534`
+    - `mean_abs=0.000045`
+    - sample output is nonzero
+- FA2 real-path paged control:
+  - same config but `--paged_kv=1 --page_size=16`
+  - Result:
+    - process exits with code `-1` and no stdout/stderr
+  - Status:
+    - not investigated yet because the non-paged FA2 control already proves the harness and real varlen path can be correct on this machine
+- Added deterministic harness input modes in `tests/fa3_sm90_repro.cc`:
+  - `uniform_const_v`
+  - `uniform_ramp_v`
+  - `single_key_copy`
+- `uniform_const_v` is the cleanest correctness probe so far:
+  - FA3:
+    - `./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0 --input_mode=uniform_const_v --dump_count=8`
+    - Result:
+      - `FAIL`
+      - `max_abs=0.125000`
+      - `max_rel=1.000000`
+      - `mean_abs=0.125000`
+      - sample output is all zeros
+  - FA2:
+    - same config with `./bazel-bin/fa2_control_repro`
+    - Result:
+      - `PASS`
+      - exact constant output `0.125000` in the sample
+- `uniform_ramp_v` is also a good structured probe:
+  - FA3:
+    - returns all zeros and fails reference
+  - FA2:
+    - passes reference with nonzero ramp/prefix-mean output
+    - sample begins `0.050049 0.051025 0.052002 0.052979 0.053955 0.054932 0.055908 0.056885`
+- `single_key_copy` was not useful as initially framed:
+  - both FA2 and FA3 returned zeros against the current CPU reference for `seqlen_k=1`, so the assumption behind that test needs to be revisited before using it as evidence
+- Current practical conclusion:
+  - We now have a clean A/B on the real non-paged path:
+    - FA2 is correct
+    - FA3 deterministically zeros outputs
+  - The best crafted correctness inputs so far are:
+    - `uniform_const_v` for an exact constant-output oracle
+    - `uniform_ramp_v` for a structured nontrivial oracle

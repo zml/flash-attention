@@ -55,6 +55,7 @@ struct Options {
     int dump_count = 16;
     float atol = 3e-2f;
     float rtol = 3e-2f;
+    std::string input_mode = "random";
 };
 
 struct Stats {
@@ -74,6 +75,13 @@ bool ParseKernel(std::string_view value) {
     if (value == "fa2") return true;
     if (value == "fa3") return false;
     throw std::runtime_error("kernel must be fa2 or fa3");
+}
+
+bool IsKnownInputMode(std::string_view value) {
+    return value == "random" ||
+           value == "uniform_const_v" ||
+           value == "uniform_ramp_v" ||
+           value == "single_key_copy";
 }
 
 bool ParseArg(std::string_view arg, std::string_view name, std::string* value) {
@@ -128,6 +136,7 @@ Options ParseOptions(int argc, char** argv) {
         }
         else if (ParseArg(arg, "atol", &value)) opts.atol = std::stof(value);
         else if (ParseArg(arg, "rtol", &value)) opts.rtol = std::stof(value);
+        else if (ParseArg(arg, "input_mode", &value)) opts.input_mode = value;
         else if (arg == "--help") {
             std::cout
                 << "Usage: bazel run //:fa3_sm90_repro -- "
@@ -136,7 +145,7 @@ Options ParseOptions(int argc, char** argv) {
                 << "[--seed=N] [--bf16=0|1] [--num_splits=N] [--varlen=0|1] "
                 << "[--paged_kv=0|1] [--page_size=N] [--seqused_k=N] [--skip_ref=0|1] "
                 << "[--kernel=fa2|fa3] [--dump_count=N] "
-                << "[--atol=F] [--rtol=F]\n";
+                << "[--atol=F] [--rtol=F] [--input_mode=random|uniform_const_v|uniform_ramp_v|single_key_copy]\n";
             std::exit(0);
         } else {
             std::cerr << "Unknown arg: " << arg << std::endl;
@@ -153,6 +162,14 @@ Options ParseOptions(int argc, char** argv) {
     }
     if (opts.seqused_k > opts.seqlen_k) {
         std::cerr << "seqused_k must be <= seqlen_k\n";
+        std::exit(1);
+    }
+    if (!IsKnownInputMode(opts.input_mode)) {
+        std::cerr << "unknown input_mode: " << opts.input_mode << "\n";
+        std::exit(1);
+    }
+    if (opts.input_mode == "single_key_copy" && opts.seqlen_k != 1) {
+        std::cerr << "single_key_copy requires seqlen_k=1\n";
         std::exit(1);
     }
     return opts;
@@ -206,12 +223,55 @@ float F16BitsToFloat(uint16_t x) {
     return __half2float(h);
 }
 
-void FillInput(std::vector<uint16_t>* out, const Options& opts) {
+uint16_t EncodeFloat(float x, bool bf16) {
+    return bf16 ? FloatToBf16Bits(x) : FloatToF16Bits(x);
+}
+
+void FillRandom(std::vector<uint16_t>* out, const Options& opts, int seed_offset = 0) {
     std::mt19937 rng(opts.seed);
+    rng.discard(seed_offset);
     std::uniform_real_distribution<float> dist(-0.25f, 0.25f);
     for (uint16_t& v : *out) {
         float x = dist(rng);
-        v = opts.bf16 ? FloatToBf16Bits(x) : FloatToF16Bits(x);
+        v = EncodeFloat(x, opts.bf16);
+    }
+}
+
+void FillZeros(std::vector<uint16_t>* out, const Options& opts) {
+    std::fill(out->begin(), out->end(), EncodeFloat(0.0f, opts.bf16));
+}
+
+void FillConstant(std::vector<uint16_t>* out, const Options& opts, float value) {
+    std::fill(out->begin(), out->end(), EncodeFloat(value, opts.bf16));
+}
+
+void FillRampLogicalKv(std::vector<uint16_t>* out, const Options& opts, float token_scale) {
+    const int hk = opts.num_heads_k;
+    const int d = opts.head_dim;
+    for (int ib = 0; ib < opts.batch; ++ib) {
+        for (int ik = 0; ik < opts.seqlen_k; ++ik) {
+            for (int ih = 0; ih < hk; ++ih) {
+                for (int id = 0; id < d; ++id) {
+                    const size_t idx = (((static_cast<size_t>(ib) * opts.seqlen_k + ik) * hk + ih) * d + id);
+                    float value = token_scale * static_cast<float>(ik + 1) + 0.001f * static_cast<float>(id) + 0.01f * static_cast<float>(ih);
+                    (*out)[idx] = EncodeFloat(value, opts.bf16);
+                }
+            }
+        }
+    }
+}
+
+void FillSingleKeyCopyV(std::vector<uint16_t>* out, const Options& opts) {
+    const int hk = opts.num_heads_k;
+    const int d = opts.head_dim;
+    for (int ib = 0; ib < opts.batch; ++ib) {
+        for (int ih = 0; ih < hk; ++ih) {
+            for (int id = 0; id < d; ++id) {
+                const size_t idx = (((static_cast<size_t>(ib) * opts.seqlen_k) * hk + ih) * d + id);
+                float value = 0.125f + 0.01f * static_cast<float>(ih) + 0.001f * static_cast<float>(id);
+                (*out)[idx] = EncodeFloat(value, opts.bf16);
+            }
+        }
     }
 }
 
@@ -380,9 +440,23 @@ int main(int argc, char** argv) {
         static_cast<size_t>(opts.batch) * opts.seqlen_k * opts.num_heads_k * opts.head_dim);
     std::vector<uint16_t> h_k(kv_elems);
     std::vector<uint16_t> h_v(kv_elems);
-    FillInput(&h_q, opts);
-    FillInput(&h_k_logical, opts);
-    FillInput(&h_v_logical, opts);
+    if (opts.input_mode == "random") {
+        FillRandom(&h_q, opts, 0);
+        FillRandom(&h_k_logical, opts, 17);
+        FillRandom(&h_v_logical, opts, 33);
+    } else if (opts.input_mode == "uniform_const_v") {
+        FillZeros(&h_q, opts);
+        FillZeros(&h_k_logical, opts);
+        FillConstant(&h_v_logical, opts, 0.125f);
+    } else if (opts.input_mode == "uniform_ramp_v") {
+        FillZeros(&h_q, opts);
+        FillZeros(&h_k_logical, opts);
+        FillRampLogicalKv(&h_v_logical, opts, 0.05f);
+    } else if (opts.input_mode == "single_key_copy") {
+        FillZeros(&h_q, opts);
+        FillZeros(&h_k_logical, opts);
+        FillSingleKeyCopyV(&h_v_logical, opts);
+    }
     if (opts.paged_kv) {
         FillPagedKv(&h_k, h_k_logical, opts, max_pages_per_seq);
         FillPagedKv(&h_v, h_v_logical, opts, max_pages_per_seq);
@@ -619,6 +693,7 @@ int main(int argc, char** argv) {
               << " paged_kv=" << opts.paged_kv
               << " page_size=" << opts.page_size
               << " effective_seqlen_k=" << effective_seqlen_k
+              << " input_mode=" << opts.input_mode
               << " skip_ref=" << opts.skip_ref
               << " kernel=" << (opts.use_fa2 ? "fa2" : "fa3")
               << " iters=" << opts.iters
