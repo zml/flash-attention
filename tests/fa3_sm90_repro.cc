@@ -39,6 +39,7 @@ struct Options {
     int seed = 123;
     bool bf16 = true;
     int num_splits = 1;
+    bool varlen = true;
     float atol = 3e-2f;
     float rtol = 3e-2f;
 };
@@ -83,6 +84,7 @@ Options ParseOptions(int argc, char** argv) {
         else if (ParseArg(arg, "seed", &value)) opts.seed = std::stoi(value);
         else if (ParseArg(arg, "bf16", &value)) opts.bf16 = ParseBool(value);
         else if (ParseArg(arg, "num_splits", &value)) opts.num_splits = std::stoi(value);
+        else if (ParseArg(arg, "varlen", &value)) opts.varlen = ParseBool(value);
         else if (ParseArg(arg, "atol", &value)) opts.atol = std::stof(value);
         else if (ParseArg(arg, "rtol", &value)) opts.rtol = std::stof(value);
         else if (arg == "--help") {
@@ -90,7 +92,8 @@ Options ParseOptions(int argc, char** argv) {
                 << "Usage: bazel run //:fa3_sm90_repro -- "
                 << "[--batch=N] [--seqlen_q=N] [--seqlen_k=N] [--num_heads=N] "
                 << "[--num_heads_k=N] [--head_dim=N] [--causal=0|1] [--iters=N] "
-                << "[--seed=N] [--bf16=0|1] [--num_splits=N] [--atol=F] [--rtol=F]\n";
+                << "[--seed=N] [--bf16=0|1] [--num_splits=N] [--varlen=0|1] "
+                << "[--atol=F] [--rtol=F]\n";
             std::exit(0);
         } else {
             std::cerr << "Unknown arg: " << arg << std::endl;
@@ -261,18 +264,23 @@ bool HasNaN(const std::vector<float>& x) {
 int main(int argc, char** argv) {
     const Options opts = ParseOptions(argc, argv);
 
-    const std::vector<int64_t> q_dims = {
-        opts.batch, opts.seqlen_q, opts.num_heads, opts.head_dim};
-    const std::vector<int64_t> kv_dims = {
-        opts.batch, opts.seqlen_k, opts.num_heads_k, opts.head_dim};
-    const std::vector<int64_t> lse_dims = {
-        opts.batch, opts.num_heads, opts.seqlen_q};
+    const std::vector<int64_t> q_dims = opts.varlen
+        ? std::vector<int64_t>{opts.batch * opts.seqlen_q, opts.num_heads, opts.head_dim}
+        : std::vector<int64_t>{opts.batch, opts.seqlen_q, opts.num_heads, opts.head_dim};
+    const std::vector<int64_t> kv_dims = opts.varlen
+        ? std::vector<int64_t>{opts.batch * opts.seqlen_k, opts.num_heads_k, opts.head_dim}
+        : std::vector<int64_t>{opts.batch, opts.seqlen_k, opts.num_heads_k, opts.head_dim};
+    const std::vector<int64_t> lse_dims = opts.varlen
+        ? std::vector<int64_t>{opts.num_heads, opts.batch * opts.seqlen_q}
+        : std::vector<int64_t>{opts.batch, opts.num_heads, opts.seqlen_q};
     const std::vector<int64_t> sched_dims = {1};
+    const std::vector<int64_t> cu_dims = {opts.batch + 1};
 
     const size_t q_elems = Product(q_dims);
     const size_t kv_elems = Product(kv_dims);
     const size_t out_elems = q_elems;
     const size_t lse_elems = Product(lse_dims);
+    const size_t cu_elems = Product(cu_dims);
 
     std::vector<uint16_t> h_q(q_elems);
     std::vector<uint16_t> h_k(kv_elems);
@@ -285,12 +293,20 @@ int main(int argc, char** argv) {
     const std::vector<float> k_f = DecodeToFloat(h_k, opts.bf16);
     const std::vector<float> v_f = DecodeToFloat(h_v, opts.bf16);
     const std::vector<float> ref = CpuReference(q_f, k_f, v_f, opts);
+    std::vector<int32_t> h_cu_q(cu_elems);
+    std::vector<int32_t> h_cu_k(cu_elems);
+    for (int i = 0; i <= opts.batch; ++i) {
+        h_cu_q[i] = i * opts.seqlen_q;
+        h_cu_k[i] = i * opts.seqlen_k;
+    }
 
     uint16_t* d_q = nullptr;
     uint16_t* d_k = nullptr;
     uint16_t* d_v = nullptr;
     uint16_t* d_out = nullptr;
     float* d_lse = nullptr;
+    int32_t* d_cu_q = nullptr;
+    int32_t* d_cu_k = nullptr;
     int* d_sched = nullptr;
 
     CUDA_CHECK(cudaMalloc(&d_q, q_elems * sizeof(uint16_t)));
@@ -298,11 +314,15 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaMalloc(&d_v, kv_elems * sizeof(uint16_t)));
     CUDA_CHECK(cudaMalloc(&d_out, out_elems * sizeof(uint16_t)));
     CUDA_CHECK(cudaMalloc(&d_lse, lse_elems * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_cu_q, cu_elems * sizeof(int32_t)));
+    CUDA_CHECK(cudaMalloc(&d_cu_k, cu_elems * sizeof(int32_t)));
     CUDA_CHECK(cudaMalloc(&d_sched, sizeof(int)));
 
     CUDA_CHECK(cudaMemcpy(d_q, h_q.data(), q_elems * sizeof(uint16_t), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_k, h_k.data(), kv_elems * sizeof(uint16_t), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_v, h_v.data(), kv_elems * sizeof(uint16_t), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_cu_q, h_cu_q.data(), cu_elems * sizeof(int32_t), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_cu_k, h_cu_k.data(), cu_elems * sizeof(int32_t), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemset(d_out, 0, out_elems * sizeof(uint16_t)));
     CUDA_CHECK(cudaMemset(d_lse, 0, lse_elems * sizeof(float)));
     CUDA_CHECK(cudaMemset(d_sched, 0, sizeof(int)));
@@ -313,6 +333,8 @@ int main(int argc, char** argv) {
     FlashattnTensor v = MakeTensor(d_v, dtype, kv_dims);
     FlashattnTensor out = MakeTensor(d_out, dtype, q_dims);
     FlashattnTensor lse = MakeTensor(d_lse, CAPI_FLOAT, lse_dims);
+    FlashattnTensor cu_q = MakeTensor(d_cu_q, CAPI_INT32, cu_dims);
+    FlashattnTensor cu_k = MakeTensor(d_cu_k, CAPI_INT32, cu_dims);
     FlashattnTensor sched = MakeTensor(d_sched, CAPI_INT32, sched_dims);
 
     const FA3MhaFwdParams params{
@@ -344,8 +366,8 @@ int main(int argc, char** argv) {
             &k,
             &v,
             &out,
-            nullptr,
-            nullptr,
+            opts.varlen ? &cu_q : nullptr,
+            opts.varlen ? &cu_k : nullptr,
             nullptr,
             nullptr,
             nullptr,
@@ -389,6 +411,7 @@ int main(int argc, char** argv) {
               << " causal=" << opts.causal
               << " dtype=" << (opts.bf16 ? "bf16" : "fp16")
               << " num_splits=" << opts.num_splits
+              << " varlen=" << opts.varlen
               << " iters=" << opts.iters
               << "\n";
     std::cout << "compare"
@@ -412,6 +435,8 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaFree(d_v));
     CUDA_CHECK(cudaFree(d_out));
     CUDA_CHECK(cudaFree(d_lse));
+    CUDA_CHECK(cudaFree(d_cu_q));
+    CUDA_CHECK(cudaFree(d_cu_k));
     CUDA_CHECK(cudaFree(d_sched));
 
     if (!pass) {
