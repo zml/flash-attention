@@ -32,9 +32,11 @@ http_archive(
     integrity = "sha256-67GlI1MmJjCRgGXnPho+EfCP4xuZDCk7SR38nLkrB6g=",
 )
 
-register_toolchains(
-    "@llvm//toolchain:all",
-)
+# Disabled for the nvcc experiment so the CUDA rules can fall back to the
+# system host compiler instead of the registered LLVM toolchain.
+# register_toolchains(
+#     "@llvm//toolchain:all",
+# )
 
 bazel_dep(name = "cuda_toolkit", version = "0.0.2")
 git_override(

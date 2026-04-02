@@ -549,3 +549,17 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
   - hermetic `rules_cuda` is viable enough to reach actual `nvcc` compilation on this branch
   - the remaining issue is not CUDA package discovery
   - the remaining issue is host-toolchain selection: `nvcc` is picking the LLVM/clang/libc++ toolchain instead of a GCC/libstdc++ host compiler
+
+## 2026-04-02 System Clang Host-Compiler Attempt
+
+- Installed system `clang` from `apt` as suggested.
+- Disabled `register_toolchains("@llvm//toolchain:all")` in `MODULE.bazel` so the nvcc path would stop picking the LLVM toolchain.
+- Rebuilt with:
+  - `bazel --batch build --config remote --jobs=1000 //:fa3_sm90_full_repro`
+  - invocation `fe75461a-04b2-4dbe-9f71-797dd670e5ef`
+- Result:
+  - analysis now fails immediately with:
+    - `No matching toolchains found for @@bazel_tools//tools/cpp:toolchain_type`
+- Conclusion:
+  - disabling `@llvm` registration removed the only visible Bazel C++ toolchain on this branch
+  - installing system `clang` is not enough by itself; Bazel still needs an explicitly registered non-LLVM C++ toolchain so nvcc can use it as the host compiler
