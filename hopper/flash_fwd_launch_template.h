@@ -11,6 +11,8 @@
 #include <cutlass/kernel_hardware_info.h>
 #include "cutlass/cluster_launch.hpp"
 #include "cutlass/kernel_launch.h"
+#include <cstdio>
+#include <cstdlib>
 
 #include "static_switch.h"
 #include "flash.h"
@@ -24,6 +26,14 @@
 #include "heuristics.h"
 
 using namespace cute;
+
+inline bool fa3_repro_launch_debug_enabled() {
+    static bool enabled = [] {
+        const char* env = std::getenv("FA3_REPRO_DEBUG");
+        return env != nullptr && env[0] != '\0' && env[0] != '0';
+    }();
+    return enabled;
+}
 
 template <int Arch, int kHeadDim, int kHeadDimV, int ClusterM, typename Element, typename ElementOut,
           bool Is_causal, bool Is_local, bool Has_softcap, bool Varlen, bool PagedKVNonTMA, bool AppendKV, bool HasQv,
@@ -71,7 +81,7 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
     // However, if Varlen (e.g., during decode where we have max_seqlens), using PersistentScheduler is better
     // since we'll avoid launching a bunch of thread blocks that immediately exit.
     // On Sm80, noncausal persistent seems a bit slower.
-    static constexpr bool UsePersistentScheduler = Arch >= 90 ? !(Split && !Varlen) : ((Is_causal && !Varlen) || (Varlen && Split));
+    static constexpr bool UsePersistentScheduler = Arch >= 90 ? !(Split && !Varlen) && !Varlen : ((Is_causal && !Varlen) || (Varlen && Split));
     using Scheduler = std::conditional_t<!UsePersistentScheduler, SchedulerSingleTile, SchedulerPersistent>;
     using AttnKernel = std::conditional_t<
         Arch >= 90,
@@ -175,6 +185,32 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
     dim3 grid_dims = AttnKernel::get_grid_shape(kernel_params);
     dim3 block_dims = AttnKernel::get_block_shape();
     int smem_size = AttnKernel::SharedStorageSize;
+    if (fa3_repro_launch_debug_enabled()) {
+        std::fprintf(stderr,
+                     "fa3_launch arch=%d d=%d dv=%d varlen=%d split=%d paged_non_tma=%d pack_gqa=%d "
+                     "persistent=%d num_blocks_m=%d grid=(%u,%u,%u) block=(%u,%u,%u) smem=%d "
+                     "tile_sem=%p num_splits_dyn=%p cu_q=%p seqused_q=%p\n",
+                     Arch,
+                     kHeadDim,
+                     kHeadDimV,
+                     Varlen,
+                     Split,
+                     PagedKVNonTMA,
+                     PackGQA,
+                     UsePersistentScheduler,
+                     num_blocks_m,
+                     grid_dims.x,
+                     grid_dims.y,
+                     grid_dims.z,
+                     block_dims.x,
+                     block_dims.y,
+                     block_dims.z,
+                     smem_size,
+                     static_cast<void*>(params.tile_count_semaphore),
+                     static_cast<void*>(params.num_splits_dynamic_ptr),
+                     static_cast<void*>(params.cu_seqlens_q),
+                     static_cast<void*>(params.seqused_q));
+    }
     // int smem_size_q = sizeof(decltype((typename CollectiveMainloop::TensorStorage{}).smem_q));
     // int smem_size_k = sizeof(decltype((typename CollectiveMainloop::TensorStorage{}).smem_k));
     // int smem_size_v = sizeof(decltype((typename CollectiveMainloop::TensorStorage{}).smem_v));

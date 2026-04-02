@@ -233,3 +233,88 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
    - whether the scheduler class is persistent
 2. Rebuild and rerun the small paged-KV dynamic-split repro with `FA3_REPRO_DEBUG=1`.
 3. Use that data to decide whether the main kernel is being launched with inconsistent scheduler metadata or whether the problem is already deeper in clang-generated device code.
+
+## 2026-04-02 Post-Launch Narrowing
+
+- Added launch-level debug prints in `hopper/flash_fwd_launch_template.h` under `FA3_REPRO_DEBUG=1`:
+  - `num_blocks_m`
+  - grid dims
+  - block dims
+  - dynamic shared memory size
+  - persistent vs single-tile scheduler choice
+  - `tile_count_semaphore`
+  - `num_splits_dynamic_ptr`
+  - `cu_seqlens_q`
+- Rebuilt `//:fa3_sm90_full_repro` with invocation:
+  - `2493cd24-39a5-410b-bd73-cd41a902bdb7`
+- Small paged-KV dynamic-split repro with launch debug:
+  - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=16 --num_splits=0 --dump_count=8`
+  - Observed launch:
+    - `persistent=1`
+    - `num_blocks_m=2`
+    - `grid=(132,1,1)`
+    - `block=(384,1,1)`
+    - valid non-null device pointers for `tile_sem`, `num_splits_dyn`, and `cu_q`
+  - Result:
+    - output still all zeros
+    - scheduler metadata still remains `sched 0 1`
+- Small paged-KV dynamic-split repro with prep bypass:
+  - `FA3_REPRO_DEBUG=1 FA3_REPRO_SKIP_SCHED_PREP=1 ...`
+  - Launch geometry is the same as above
+  - Result:
+    - immediate `CUDA error: unspecified launch failure`
+- Small paged-KV explicit split repro:
+  - `FA3_REPRO_DEBUG=1 ... --num_splits=1 --skip_ref=1`
+  - Launch geometry is the same except `num_splits_dyn=(nil)`
+  - Result:
+    - immediate `CUDA error: unspecified launch failure`
+- Interpretation after launch-level instrumentation:
+  - the wrapper is passing coherent-looking scheduler pointers and launch geometry
+  - the bad behavior is not explained by obviously bad scheduler metadata at launch time
+
+## 2026-04-02 Persistent Scheduler Elimination
+
+- Forced varlen FA3 onto `SingleTileScheduler` in `hopper/flash_fwd_launch_template.h` to remove `VarlenDynamicPersistentTileScheduler` from the equation.
+- Rebuilt with invocation:
+  - `2ee10916-bd5e-42bd-836d-3d47512ec7fe`
+- Small paged-KV dynamic-split repro after forcing `SingleTileScheduler`:
+  - launch changes to:
+    - `persistent=0`
+    - `grid=(2,8,1)`
+  - Result:
+    - output is still deterministically all zeros
+    - scheduler metadata still shows `sched 0 1`
+- Small non-paged varlen repro with the same head geometry:
+  - `--batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0`
+  - Result:
+    - still deterministically all zeros
+- Small non-paged varlen repro without GQA:
+  - `--batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=32 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0`
+  - Result:
+    - still deterministically all zeros
+- Minimal wrong-output repro found:
+  - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=1 --num_heads_k=1 --head_dim=64 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0 --dump_count=8`
+  - Launch:
+    - `persistent=0`
+    - `grid=(1,1,1)`
+    - `block=(256,1,1)`
+  - Result:
+    - deterministic all-zero output
+    - fails CPU reference
+- Current best narrowing:
+  - The wrong-output bug no longer requires:
+    - paged KV
+    - GQA / PackGQA
+    - dynamic persistent scheduling
+  - The remaining minimal bad surface is:
+    - SM90 FA3
+    - clang build
+    - varlen forward path
+    - causal
+    - batch=1
+    - seqlen_q=64
+    - seqlen_k=64
+    - num_heads=1
+    - num_heads_k=1
+    - head_dim=64
+  - This points away from scheduler metadata and toward the varlen kernel specialization / mainloop path itself under clang.
