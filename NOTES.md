@@ -43,6 +43,7 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
   - `--paged_kv=0|1`
   - `--page_size=N`
   - `--seqused_k=N`
+  - `--skip_ref=0|1`
   - In paged mode, the harness generates logical K/V, packs it into page storage, and passes an identity `page_table`.
 - Built and ran the full clang SM90 target:
   - Build command:
@@ -58,6 +59,9 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
   - Custom-llama-like head geometry:
     - `--iters=1 --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=1024`
     - Result: same launch failure at the same line
+  - Exact IR-sized geometry without CPU reference:
+    - `--iters=1 --batch=1 --seqlen_q=2048 --seqlen_k=2048 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=1024 --skip_ref=1`
+    - Result: same launch failure at `tests/fa3_sm90_repro.cc:482`
 - Current runtime invocation:
   - Direct execution requires Bazel CUDA redist in `LD_LIBRARY_PATH`.
   - Using the Bazel-downloaded CUDA 13 runtime resolves the loader error, then the FA3 kernel crashes.
@@ -92,8 +96,9 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
    - `seqused_k`
    - `causal=0|1`
    - `num_heads=32`, `num_heads_k=8`, `head_dim=128`
-4. If a non-crashing clang config is found, compare against CPU reference immediately and record the first wrong-output seed/config.
-5. If every full-target clang config still crashes, narrow the failure to a smaller C API surface change or kernel family and keep checkpointing often.
+4. The exact IR-sized paged-KV config is now directly runnable, and it still crashes; next step is to shrink around that surface until something survives the first sync.
+5. If a non-crashing clang config is found, compare against CPU reference immediately and record the first wrong-output seed/config.
+6. If every full-target clang config still crashes, narrow the failure to a smaller C API surface change or kernel family and keep checkpointing often.
 
 ## Open Questions
 

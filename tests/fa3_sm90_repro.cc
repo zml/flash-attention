@@ -43,6 +43,7 @@ struct Options {
     bool paged_kv = true;
     int page_size = 16;
     int seqused_k = -1;
+    bool skip_ref = false;
     float atol = 3e-2f;
     float rtol = 3e-2f;
 };
@@ -91,6 +92,7 @@ Options ParseOptions(int argc, char** argv) {
         else if (ParseArg(arg, "paged_kv", &value)) opts.paged_kv = ParseBool(value);
         else if (ParseArg(arg, "page_size", &value)) opts.page_size = std::stoi(value);
         else if (ParseArg(arg, "seqused_k", &value)) opts.seqused_k = std::stoi(value);
+        else if (ParseArg(arg, "skip_ref", &value)) opts.skip_ref = ParseBool(value);
         else if (ParseArg(arg, "atol", &value)) opts.atol = std::stof(value);
         else if (ParseArg(arg, "rtol", &value)) opts.rtol = std::stof(value);
         else if (arg == "--help") {
@@ -99,7 +101,7 @@ Options ParseOptions(int argc, char** argv) {
                 << "[--batch=N] [--seqlen_q=N] [--seqlen_k=N] [--num_heads=N] "
                 << "[--num_heads_k=N] [--head_dim=N] [--causal=0|1] [--iters=N] "
                 << "[--seed=N] [--bf16=0|1] [--num_splits=N] [--varlen=0|1] "
-                << "[--paged_kv=0|1] [--page_size=N] [--seqused_k=N] "
+                << "[--paged_kv=0|1] [--page_size=N] [--seqused_k=N] [--skip_ref=0|1] "
                 << "[--atol=F] [--rtol=F]\n";
             std::exit(0);
         } else {
@@ -350,12 +352,15 @@ int main(int argc, char** argv) {
         h_v = h_v_logical;
     }
 
-    const std::vector<float> q_f = DecodeToFloat(h_q, opts.bf16);
-    const std::vector<float> k_f = DecodeToFloat(h_k_logical, opts.bf16);
-    const std::vector<float> v_f = DecodeToFloat(h_v_logical, opts.bf16);
-    Options ref_opts = opts;
-    ref_opts.seqlen_k = effective_seqlen_k;
-    const std::vector<float> ref = CpuReference(q_f, k_f, v_f, ref_opts);
+    std::vector<float> ref;
+    if (!opts.skip_ref) {
+        const std::vector<float> q_f = DecodeToFloat(h_q, opts.bf16);
+        const std::vector<float> k_f = DecodeToFloat(h_k_logical, opts.bf16);
+        const std::vector<float> v_f = DecodeToFloat(h_v_logical, opts.bf16);
+        Options ref_opts = opts;
+        ref_opts.seqlen_k = effective_seqlen_k;
+        ref = CpuReference(q_f, k_f, v_f, ref_opts);
+    }
     std::vector<int32_t> h_cu_q(cu_elems);
     std::vector<int32_t> h_cu_k(cu_elems);
     std::vector<int32_t> h_page_table(page_table_elems);
@@ -485,11 +490,11 @@ int main(int argc, char** argv) {
         prev_run = got;
     }
 
-    const Stats stats = Compare(ref, got);
+    const Stats stats = opts.skip_ref ? Stats{} : Compare(ref, got);
     const bool has_nan = HasNaN(got);
-    const bool pass = !has_nan &&
-        stats.max_abs <= opts.atol + opts.rtol * std::abs(stats.ref_at_max) &&
-        max_repeat_delta == 0.0f;
+    const bool compare_pass = opts.skip_ref ||
+        stats.max_abs <= opts.atol + opts.rtol * std::abs(stats.ref_at_max);
+    const bool pass = !has_nan && compare_pass && max_repeat_delta == 0.0f;
 
     std::cout << std::fixed << std::setprecision(6);
     std::cout << "config"
@@ -506,16 +511,21 @@ int main(int argc, char** argv) {
               << " paged_kv=" << opts.paged_kv
               << " page_size=" << opts.page_size
               << " effective_seqlen_k=" << effective_seqlen_k
+              << " skip_ref=" << opts.skip_ref
               << " iters=" << opts.iters
               << "\n";
-    std::cout << "compare"
-              << " max_abs=" << stats.max_abs
-              << " max_rel=" << stats.max_rel
-              << " mean_abs=" << stats.mean_abs
-              << " max_idx=" << stats.max_idx
-              << " ref=" << stats.ref_at_max
-              << " got=" << stats.got_at_max
-              << "\n";
+    if (opts.skip_ref) {
+        std::cout << "compare skipped\n";
+    } else {
+        std::cout << "compare"
+                  << " max_abs=" << stats.max_abs
+                  << " max_rel=" << stats.max_rel
+                  << " mean_abs=" << stats.mean_abs
+                  << " max_idx=" << stats.max_idx
+                  << " ref=" << stats.ref_at_max
+                  << " got=" << stats.got_at_max
+                  << "\n";
+    }
     std::cout << "repeatability max_delta=" << max_repeat_delta
               << " has_nan_or_inf=" << has_nan << "\n";
     std::cout << "sample";
