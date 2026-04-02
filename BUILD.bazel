@@ -1,5 +1,6 @@
 load("@bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
 load("@llvm//:cuda.bzl", "cuda_library")
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_shared_library.bzl", "cc_shared_library")
 load("@tar.bzl//tar:tar.bzl", "tar")
@@ -66,6 +67,11 @@ CUDA_COMPILATION_HEADER_DEPS = CUDA_HEADER_DEPS + [
 
 cuda_library(
     name = "flashattn",
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "csrc/flash_attn/src",
+    ],
     defines = [
         "ENABLE_FP8",
         "FLASHATTENTION_DISABLE_BACKWARD",
@@ -80,6 +86,10 @@ cuda_library(
         "//:ATen_stub",
     ],
     copts = [
+        "-Icapi",
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Icsrc/flash_attn/src",
         "-U__CUDA_NO_HALF_OPERATORS__",
         "-U__CUDA_NO_HALF_CONVERSIONS__",
         "-U__CUDA_NO_HALF2_OPERATORS__",
@@ -160,6 +170,12 @@ cc_library(
 cc_library(
     name = "capi",
     srcs = ["capi/capi.cc"],
+    includes = [
+        "capi",
+        "csrc",
+        "csrc/cutlass/include",
+        "csrc/flash_attn/src",
+    ],
     defines = [
         "ENABLE_FP8",
         "FLASHATTENTION_DISABLE_BACKWARD",
@@ -167,6 +183,10 @@ cc_library(
         "FLASHATTENTION_DISABLE_UNEVEN_K",
     ],
     copts = [
+        "-Icapi",
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
         "-U__CUDA_NO_HALF_OPERATORS__",
         "-U__CUDA_NO_HALF_CONVERSIONS__",
         "-U__CUDA_NO_HALF2_OPERATORS__",
@@ -198,6 +218,11 @@ cc_library(
 
 cuda_library(
     name = "flashattn-sm90",
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
     deps = CUDA_COMPILATION_HEADER_DEPS + [
         "@cccl//:cub_headers",
         "@cccl//:thrust_headers",
@@ -221,6 +246,9 @@ cuda_library(
         "CUTLASS_ENABLE_GDC_FOR_SM90",
     ],
     copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Icsrc/flash_attn/src",
         "-U__CUDA_NO_HALF_OPERATORS__",
         "-U__CUDA_NO_HALF_CONVERSIONS__",
         "-U__CUDA_NO_HALF2_OPERATORS__",
@@ -263,9 +291,68 @@ cuda_library(
     ]),
 )
 
+cuda_library(
+    name = "flashattn-sm90-repro",
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_COMPILATION_HEADER_DEPS + [
+        "@cccl//:cub_headers",
+        "@cccl//:thrust_headers",
+        ":capi-hdrs",
+        "//:flashattn-sm90-headers",
+        "//:cute",
+        "//:cutlass",
+        "//:c10_stub",
+        "//:ATen_stub",
+    ],
+    defines = [
+        "FLASHATTENTION_DISABLE_BACKWARD",
+        "FLASHATTENTION_DISABLE_DROPOUT",
+        "FLASHATTENTION_DISABLE_SOFTCAP",
+        "FLASHATTENTION_VARLEN_ONLY",
+        "FLASHATTENTION_DISABLE_SM8x",
+        "FLASHATTENTION_DISABLE_APPENDKV",
+        "FLASHATTENTION_DISABLE_CLUSTER",
+        "FLASHATTENTION_DISABLE_SPLIT",
+        "FLASHATTENTION_DISABLE_FP8",
+        "FLASHATTENTION_DISABLE_FP16",
+        "FLASHATTENTION_DISABLE_PACKGQA",
+        "FLASHATTENTION_DISABLE_HDIM64",
+        "FLASHATTENTION_DISABLE_HDIM96",
+        "FLASHATTENTION_DISABLE_HDIM192",
+        "FLASHATTENTION_DISABLE_HDIM256",
+        "CUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED",
+        "CUTLASS_ENABLE_GDC_FOR_SM90",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
+        "-U__CUDA_NO_HALF_OPERATORS__",
+        "-U__CUDA_NO_HALF_CONVERSIONS__",
+        "-U__CUDA_NO_HALF2_OPERATORS__",
+        "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+    ],
+    archs = ["sm_90a"],
+    srcs = [
+        "hopper/flash_prepare_scheduler.cu",
+        "hopper/flash_fwd_combine.cu",
+        "hopper/instantiations/flash_fwd_hdim128_bf16_sm90.cu",
+    ],
+)
+
 cc_library(
     name = "capi-sm90",
     srcs = ["capi/capi_sm90.cc"],
+    includes = [
+        "capi",
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
     defines = [
         "FLASHATTENTION_DISABLE_BACKWARD",
         "FLASHATTENTION_DISABLE_DROPOUT",
@@ -280,6 +367,9 @@ cc_library(
     ],
     # archs = ["sm_90a"],
     copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
         "-U__CUDA_NO_HALF_OPERATORS__",
         "-U__CUDA_NO_HALF_CONVERSIONS__",
         "-U__CUDA_NO_HALF2_OPERATORS__",
@@ -305,6 +395,56 @@ cc_library(
     alwayslink = True,
 )
 
+cc_library(
+    name = "capi-sm90-repro",
+    srcs = ["capi/capi_sm90.cc"],
+    includes = [
+        "capi",
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    defines = [
+        "FLASHATTENTION_DISABLE_BACKWARD",
+        "FLASHATTENTION_DISABLE_DROPOUT",
+        "FLASHATTENTION_DISABLE_SOFTCAP",
+        "FLASHATTENTION_VARLEN_ONLY",
+        "FLASHATTENTION_DISABLE_SM8x",
+        "FLASHATTENTION_DISABLE_APPENDKV",
+        "FLASHATTENTION_DISABLE_CLUSTER",
+        "FLASHATTENTION_DISABLE_SPLIT",
+        "FLASHATTENTION_DISABLE_FP8",
+        "FLASHATTENTION_DISABLE_FP16",
+        "FLASHATTENTION_DISABLE_PACKGQA",
+        "FLASHATTENTION_DISABLE_HDIM64",
+        "FLASHATTENTION_DISABLE_HDIM96",
+        "FLASHATTENTION_DISABLE_HDIM192",
+        "FLASHATTENTION_DISABLE_HDIM256",
+        "CUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED",
+        "CUTLASS_ENABLE_GDC_FOR_SM90",
+    ],
+    copts = [
+        "-Icapi",
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
+        "-U__CUDA_NO_HALF_OPERATORS__",
+        "-U__CUDA_NO_HALF_CONVERSIONS__",
+        "-U__CUDA_NO_HALF2_OPERATORS__",
+        "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+        "--std=c++20",
+    ],
+    deps = CUDA_HEADER_DEPS + [
+        ":capi-hdrs",
+        "//:flashattn-sm90-headers",
+        "//:cute",
+        "//:cutlass",
+        "//:c10_stub",
+        "//:ATen_stub",
+    ],
+    alwayslink = True,
+)
+
 cc_shared_library(
     name = "flashattn_so",
     shared_lib_name = "libflashattn.so",
@@ -313,6 +453,19 @@ cc_shared_library(
         ":capi-sm90",
         ":flashattn",
         ":flashattn-sm90",
+    ],
+)
+
+cc_binary(
+    name = "fa3_sm90_repro",
+    srcs = ["tests/fa3_sm90_repro.cc"],
+    copts = ["--std=c++20"],
+    deps = [
+        ":capi-hdrs",
+        ":capi-sm90-repro",
+        ":flashattn-sm90-repro",
+        "@cuda//cuda:cuda",
+        "@cuda//cuda:cuda_driver",
     ],
 )
 
