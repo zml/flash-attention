@@ -1,4 +1,6 @@
 #include <cutlass/numeric_types.h>
+#include <cstdio>
+#include <cstdlib>
 
 #include "flash.h"
 #include "static_switch.h"
@@ -358,6 +360,14 @@ inline int get_max_headdim() {
     return 64;
     #endif
     return 0;
+}
+
+inline bool fa3_repro_debug_enabled() {
+    static bool enabled = [] {
+        const char* env = std::getenv("FA3_REPRO_DEBUG");
+        return env != nullptr && env[0] != '\0' && env[0] != '0';
+    }();
+    return enabled;
 }
 
 inline int round_up_headdim(int head_size) {
@@ -738,6 +748,35 @@ mha_fwd(const FlashattnTensor *q, // (b, s_q, h, d) or (total_q, h, d) if there 
         //}
         params.tile_count_semaphore = scheduler_needs_semaphore ? static_cast<int*>(tile_count_semaphore->ptr) : nullptr;
         params.num_splits_dynamic_ptr = use_dynamic_split ? static_cast<int*>(tile_count_semaphore->ptr) + 1 : nullptr;
+    }
+
+    if (fa3_repro_debug_enabled()) {
+        std::fprintf(stderr,
+                     "fa3_debug arch=%d b=%d h=%d h_k=%d d=%d dv=%d seqlen_q=%d seqlen_k=%d "
+                     "varlen_q=%d varlen_k=%d paged_kv=%d pagedkv_tma=%d num_splits=%d "
+                     "use_dynamic_split=%d scheduler_needs_semaphore=%d pack_gqa=%d "
+                     "skip_sched_meta=%d page_size=%d num_pages=%d total_q=%d total_k=%d\n",
+                     params.arch,
+                     params.b,
+                     params.h,
+                     params.h_k,
+                     params.d,
+                     params.dv,
+                     params.seqlen_q,
+                     params.seqlen_k,
+                     is_varlen_q,
+                     is_varlen_k,
+                     paged_KV,
+                     params.pagedkv_tma,
+                     params.num_splits,
+                     use_dynamic_split,
+                     scheduler_needs_semaphore,
+                     params.pack_gqa,
+                     params.skip_scheduler_metadata_computation,
+                     params.page_size,
+                     params.num_pages,
+                     params.total_q,
+                     params.total_k);
     }
 
     //if (q_v_.has_value()) {

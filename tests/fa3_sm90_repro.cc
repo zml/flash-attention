@@ -11,6 +11,7 @@
 #include <iostream>
 #include <limits>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -44,6 +45,13 @@ struct Options {
     int page_size = 16;
     int seqused_k = -1;
     bool skip_ref = false;
+    bool use_fa2 =
+#ifdef FA_REPRO_FA2_ONLY
+        true;
+#else
+        false;
+#endif
+    int dump_count = 16;
     float atol = 3e-2f;
     float rtol = 3e-2f;
 };
@@ -59,6 +67,12 @@ struct Stats {
 
 bool ParseBool(std::string_view value) {
     return value == "1" || value == "true" || value == "True";
+}
+
+bool ParseKernel(std::string_view value) {
+    if (value == "fa2") return true;
+    if (value == "fa3") return false;
+    throw std::runtime_error("kernel must be fa2 or fa3");
 }
 
 bool ParseArg(std::string_view arg, std::string_view name, std::string* value) {
@@ -93,6 +107,24 @@ Options ParseOptions(int argc, char** argv) {
         else if (ParseArg(arg, "page_size", &value)) opts.page_size = std::stoi(value);
         else if (ParseArg(arg, "seqused_k", &value)) opts.seqused_k = std::stoi(value);
         else if (ParseArg(arg, "skip_ref", &value)) opts.skip_ref = ParseBool(value);
+        else if (ParseArg(arg, "dump_count", &value)) opts.dump_count = std::stoi(value);
+        else if (ParseArg(arg, "kernel", &value)) {
+#ifdef FA_REPRO_FA2_ONLY
+            if (!ParseKernel(value)) {
+                std::cerr << "This binary was built as FA2-only\n";
+                std::exit(1);
+            }
+            opts.use_fa2 = true;
+#elif defined(FA_REPRO_FA3_ONLY)
+            if (ParseKernel(value)) {
+                std::cerr << "This binary was built as FA3-only\n";
+                std::exit(1);
+            }
+            opts.use_fa2 = false;
+#else
+            opts.use_fa2 = ParseKernel(value);
+#endif
+        }
         else if (ParseArg(arg, "atol", &value)) opts.atol = std::stof(value);
         else if (ParseArg(arg, "rtol", &value)) opts.rtol = std::stof(value);
         else if (arg == "--help") {
@@ -102,6 +134,7 @@ Options ParseOptions(int argc, char** argv) {
                 << "[--num_heads_k=N] [--head_dim=N] [--causal=0|1] [--iters=N] "
                 << "[--seed=N] [--bf16=0|1] [--num_splits=N] [--varlen=0|1] "
                 << "[--paged_kv=0|1] [--page_size=N] [--seqused_k=N] [--skip_ref=0|1] "
+                << "[--kernel=fa2|fa3] [--dump_count=N] "
                 << "[--atol=F] [--rtol=F]\n";
             std::exit(0);
         } else {
@@ -433,6 +466,7 @@ int main(int argc, char** argv) {
     FlashattnTensor seqused_k = MakeTensor(d_seqused_k, CAPI_INT32, seqused_dims);
     FlashattnTensor sched = MakeTensor(d_sched, CAPI_INT32, sched_dims);
 
+#ifndef FA_REPRO_FA2_ONLY
     const FA3MhaFwdParams params{
         .max_seqlen_q = opts.seqlen_q,
         .max_seqlen_k = opts.seqlen_k,
@@ -447,6 +481,25 @@ int main(int argc, char** argv) {
         .cp_world_size = 1,
         .cp_rank = 0,
     };
+#endif
+#ifndef FA_REPRO_FA3_ONLY
+    const FA2MhaFwdParams fa2_dense_params{
+        .is_causal = opts.causal,
+        .softmax_scale = 1.0f / std::sqrt(static_cast<float>(opts.head_dim)),
+        .window_size_left = -1,
+        .window_size_right = -1,
+    };
+    const FA2MhaVarlenFwdParams fa2_varlen_params{
+        .max_seqlen_q = opts.seqlen_q,
+        .max_seqlen_k = opts.seqlen_k,
+        .is_causal = opts.causal,
+        .softmax_scale = 1.0f / std::sqrt(static_cast<float>(opts.head_dim)),
+        .window_size_left = -1,
+        .window_size_right = -1,
+        .num_splits = opts.num_splits,
+        .num_heads = opts.num_heads,
+    };
+#endif
 
     std::vector<uint16_t> h_out(out_elems);
     std::vector<float> got(out_elems);
@@ -457,27 +510,67 @@ int main(int argc, char** argv) {
         CUDA_CHECK(cudaMemset(d_out, 0, out_elems * sizeof(uint16_t)));
         CUDA_CHECK(cudaMemset(d_lse, 0, lse_elems * sizeof(float)));
         CUDA_CHECK(cudaMemset(d_sched, 0, sched_elems * sizeof(int)));
-        fa3_mha_fwd(
-            &q,
-            &k,
-            &v,
-            &out,
-            opts.varlen ? &cu_q : nullptr,
-            !opts.paged_kv && opts.varlen ? &cu_k : nullptr,
-            nullptr,
-            opts.seqused_k >= 0 ? &seqused_k : nullptr,
-            opts.paged_kv ? &page_table : nullptr,
-            nullptr,
-            nullptr,
-            nullptr,
-            &lse,
-            nullptr,
-            nullptr,
-            &sched,
-            nullptr,
-            nullptr,
-            &params,
-            nullptr);
+        if (opts.use_fa2) {
+#ifdef FA_REPRO_FA3_ONLY
+            std::cerr << "FA2 path is not available in this binary\n";
+            return 3;
+#else
+            if (opts.varlen || opts.paged_kv || opts.seqused_k >= 0) {
+                fa2_mha_varlen_fwd(
+                    &q,
+                    &k,
+                    &v,
+                    &out,
+                    &cu_q,
+                    opts.paged_kv ? nullptr : &cu_k,
+                    opts.seqused_k >= 0 ? &seqused_k : nullptr,
+                    opts.paged_kv ? &page_table : nullptr,
+                    &lse,
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    &fa2_varlen_params,
+                    nullptr);
+            } else {
+                fa2_mha_fwd(
+                    &q,
+                    &k,
+                    &v,
+                    &out,
+                    &lse,
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    &fa2_dense_params,
+                    nullptr);
+            }
+#endif
+        }
+#ifndef FA_REPRO_FA2_ONLY
+        else {
+            fa3_mha_fwd(
+                &q,
+                &k,
+                &v,
+                &out,
+                opts.varlen ? &cu_q : nullptr,
+                !opts.paged_kv && opts.varlen ? &cu_k : nullptr,
+                nullptr,
+                opts.seqused_k >= 0 ? &seqused_k : nullptr,
+                opts.paged_kv ? &page_table : nullptr,
+                nullptr,
+                nullptr,
+                nullptr,
+                &lse,
+                nullptr,
+                nullptr,
+                &sched,
+                nullptr,
+                nullptr,
+                &params,
+                nullptr);
+        }
+#endif
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaDeviceSynchronize());
         CUDA_CHECK(cudaMemcpy(h_out.data(), d_out, out_elems * sizeof(uint16_t), cudaMemcpyDeviceToHost));
@@ -512,6 +605,7 @@ int main(int argc, char** argv) {
               << " page_size=" << opts.page_size
               << " effective_seqlen_k=" << effective_seqlen_k
               << " skip_ref=" << opts.skip_ref
+              << " kernel=" << (opts.use_fa2 ? "fa2" : "fa3")
               << " iters=" << opts.iters
               << "\n";
     if (opts.skip_ref) {
@@ -529,7 +623,7 @@ int main(int argc, char** argv) {
     std::cout << "repeatability max_delta=" << max_repeat_delta
               << " has_nan_or_inf=" << has_nan << "\n";
     std::cout << "sample";
-    for (int i = 0; i < std::min<int>(8, got.size()); ++i) {
+    for (int i = 0; i < std::min<int>(opts.dump_count, got.size()); ++i) {
         std::cout << " " << got[i];
     }
     std::cout << "\n";

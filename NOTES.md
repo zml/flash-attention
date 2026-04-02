@@ -116,3 +116,44 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
 - Which typed-FFI operands in the custom call correspond to `page_table`, `scheduler_metadata`, and scratch buffers?
 - Does the custom Llama path pass paged KV with physically rank-4 storage that is bitcast to rank-3 in HLO, or is there a separate lowering layer reshaping it?
 - Is there any clang-built FA3 config on this branch that survives the first sync, or is the current failure unconditional across the SM90 forward path?
+
+## 2026-04-02 Dynamic-Split Findings
+
+- Added temporary FA3 dispatch logging in `capi/capi_sm90.cc`, enabled with `FA3_REPRO_DEBUG=1`.
+- This exposed a new non-crashing wrong-output repro on the clang-built full SM90 FA3 binary:
+  - Build:
+    - `bazel build --config remote --jobs=1000 //:fa3_sm90_full_repro`
+  - BuildBuddy invocation:
+    - `d8716b41-32ab-4fdf-afdf-811afe92e54b`
+  - Small paged-KV config with heuristic splits:
+    - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=16 --num_splits=0`
+    - Result: no crash, but output is deterministically all zeros and fails the CPU reference.
+    - Compare summary:
+      - `max_abs=0.250000`
+      - `max_rel=1.000000`
+      - `mean_abs=0.025934`
+      - sample: all zeros
+  - Larger exact llama-like paged-KV config with heuristic splits:
+    - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=2048 --seqlen_k=2048 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=1024 --num_splits=0 --skip_ref=1`
+    - Result: no crash, but sample output is also all zeros.
+- The same geometry with explicit `--num_splits=1` still crashes:
+  - `FA3_REPRO_DEBUG=1 ... --seqlen_q=64 --seqlen_k=64 --paged_kv=1 --page_size=16 --num_splits=1 --skip_ref=1`
+  - Result: `CUDA error: unspecified launch failure`
+- The debug logs show:
+  - `--num_splits=1`:
+    - `paged_kv=1 pagedkv_tma=0 num_splits=1 use_dynamic_split=0 scheduler_needs_semaphore=1 pack_gqa=1`
+  - `--num_splits=0` on the same small case:
+    - `paged_kv=1 pagedkv_tma=0 num_splits=1 use_dynamic_split=1 scheduler_needs_semaphore=1 pack_gqa=1`
+  - `--num_splits=0` on the exact `2048 x 32 x 128` / `2048 x 8 x 128` case:
+    - `paged_kv=1 pagedkv_tma=1 num_splits=1 use_dynamic_split=1 scheduler_needs_semaphore=1 pack_gqa=1`
+- Current interpretation:
+  - The failing behavior is strongly tied to the paged-KV varlen scheduler mode selection.
+  - Static scheduler path (`use_dynamic_split=0`) crashes.
+  - Dynamic-split scheduler path (`use_dynamic_split=1`) survives but produces all-zero outputs.
+  - This is much closer to the user's real llama symptom than the earlier "always crashes" conclusion.
+- Additional note from the debug print:
+  - `capi/capi_sm90.cc` reports `total_k=batch_size * getDim(k, 1)` even for paged KV, so for `seqlen_k=64,page_size=16` it prints `total_k=16`, and for `seqlen_k=2048,page_size=1024` it prints `total_k=1024`.
+  - This may or may not be causal for forward correctness, but it is inconsistent with the logical KV length and should be audited.
+- FA2 control status:
+  - Tried building `//:fa2_llama_repro`, but the reduced FA2 target currently fails to link because it depends on the full `:capi` dispatcher, which references many FA2 kernels not present in the reduced FA2 library.
+  - This is a separate build-system issue in the control target, not yet a runtime result.
