@@ -510,3 +510,42 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
   - On the real non-paged varlen `num_splits=0` path, the kernel launch sequence completes without runtime error but never writes `out` or `softmax_lse`.
   - This is not caused by GQA packing.
   - The nearest dense path still crashes, so the likely boundary remains the SM90 FA3 varlen launch / execution path under clang.
+
+## 2026-04-02 Hermetic NVCC Build-Path Attempt
+
+- Goal:
+  - create a reversible `nvcc` A/B path for `//:fa3_sm90_full_repro` without relying on `/usr/local/cuda`
+- Checkpoint before the experiment:
+  - `58a633f` `Checkpoint before nvcc build-path experiment`
+- Switched this branch from the LLVM `cuda_library` macro to `rules_cuda`:
+  - `BUILD.bazel` now loads `@rules_cuda//cuda:defs.bzl`
+  - `MODULE.bazel` now uses a hermetic `cuda.redist_json(version = "13.0.2")` plus `cuda.toolkit(name = "cuda")`
+  - remapped CUDA labels from the old `@cuda//cuda:*` layout to the `rules_cuda` root-repo layout
+  - routed around the broken aggregate `@cuda//:cuda_headers` target by depending on specific components:
+    - `cudart_headers`
+    - `nvcc_headers`
+    - `nvvm_headers`
+    - `cccl_headers`
+    - `crt_headers`
+- Useful build results:
+  - `a4d3117d-466b-4347-bc70-33f54bbdb7aa`
+    - first `rules_cuda` load failed inside `cuda_library.bzl`
+  - `f06605b7-0cbb-4051-bac3-b19be30041cb`
+    - hermetic repo shape fixed enough to analyze, then failed on broken aggregate `@cuda//:cuda_headers`
+  - `5c90d374-fca0-447e-97d0-403521161e38`
+    - got into real compilation, then host compile failed until `crt_headers` were added
+  - `c1ac02cd-3ee6-4f48-8dd4-686b5a75d442`
+    - `bazel` server hit native-thread OOM under `--jobs=1000`
+  - `16b05a30-3167-437c-8abe-9617752e42b4`
+    - reran in `--batch` mode with the same `--jobs=1000`
+    - reached real `nvcc` compilation
+    - failed with the first actual nvcc/compiler-boundary error
+- Current nvcc blocker:
+  - `nvcc` is using the registered LLVM host toolchain
+  - failure from `host_config.h`:
+    - unsupported clang version (`clang` must be `< 21`)
+    - `libc++ is not supported on x86 system`
+- Current practical conclusion:
+  - hermetic `rules_cuda` is viable enough to reach actual `nvcc` compilation on this branch
+  - the remaining issue is not CUDA package discovery
+  - the remaining issue is host-toolchain selection: `nvcc` is picking the LLVM/clang/libc++ toolchain instead of a GCC/libstdc++ host compiler

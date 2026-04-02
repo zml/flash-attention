@@ -1,5 +1,5 @@
 load("@bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
-load("@llvm//:cuda.bzl", "cuda_library")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_shared_library.bzl", "cc_shared_library")
@@ -56,13 +56,17 @@ cc_library(
 FA2_ARCHS = ["sm_90a"]
 
 CUDA_HEADER_DEPS = [
-    "@cuda//cuda:cuda_headers",
+    "@cuda//:cudart_headers",
+    "@cuda//:nvcc_headers",
+    "@cuda//:nvvm_headers",
+    "@cuda//:cccl_headers",
+    "@cuda//:crt_headers",
     "@cccl//:cuda_headers",
     "@cccl//:nv_headers",
 ]
 
 CUDA_COMPILATION_HEADER_DEPS = CUDA_HEADER_DEPS + [
-    "@cuda//curand:headers",
+    "@cuda//:curand_headers",
 ]
 
 cuda_library(
@@ -647,8 +651,7 @@ cc_binary(
         ":capi-hdrs",
         ":capi-sm90-repro",
         ":flashattn-sm90-repro",
-        "@cuda//cuda:cuda",
-        "@cuda//cuda:cuda_driver",
+        "@cuda//:cuda",
     ],
 )
 
@@ -663,8 +666,7 @@ cc_binary(
         ":capi-hdrs",
         ":capi-sm90",
         ":flashattn-sm90",
-        "@cuda//cuda:cuda",
-        "@cuda//cuda:cuda_driver",
+        "@cuda//:cuda",
     ],
 )
 
@@ -679,8 +681,7 @@ cc_binary(
         ":capi",
         ":capi-hdrs",
         ":flashattn",
-        "@cuda//cuda:cuda",
-        "@cuda//cuda:cuda_driver",
+        "@cuda//:cuda",
     ],
 )
 
@@ -695,8 +696,7 @@ cc_binary(
         ":capi",
         ":capi-hdrs",
         ":flashattn-fa2-repro",
-        "@cuda//cuda:cuda",
-        "@cuda//cuda:cuda_driver",
+        "@cuda//:cuda",
     ],
 )
 
@@ -711,8 +711,7 @@ cc_binary(
         ":capi",
         ":capi-hdrs",
         ":flashattn-fa2-llama-repro",
-        "@cuda//cuda:cuda",
-        "@cuda//cuda:cuda_driver",
+        "@cuda//:cuda",
     ],
 )
 
@@ -727,8 +726,7 @@ cc_binary(
         ":capi-hdrs",
         ":capi-sm90-ultra-repro",
         ":flashattn-sm90-ultra-repro",
-        "@cuda//cuda:cuda",
-        "@cuda//cuda:cuda_driver",
+        "@cuda//:cuda",
     ],
 )
 
