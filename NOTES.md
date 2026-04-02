@@ -359,3 +359,22 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
     - clang-built SM90 FA3 varlen kernels are broken around the main-kernel PDL path
     - `launch_with_pdl=false` manifests as launch failure
     - `launch_with_pdl=true` manifests as silent all-zero output
+
+## 2026-04-02 GDC Wait Isolation
+
+- Restored the original host-side PDL condition in `hopper/flash_fwd_launch_template.h`.
+- Disabled only the unconditional `cutlass::arch::wait_on_dependent_grids()` in `hopper/flash_fwd_kernel_sm90.h` for the reduced repro build.
+- Rebuilt with invocation:
+  - `0757ba25-3b49-40a5-b074-cfefce382240`
+- Minimal explicit-split case after removing `griddepcontrol.wait`:
+  - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=1 --num_heads_k=1 --head_dim=64 --causal=0 --varlen=1 --paged_kv=0 --num_splits=1 --skip_ref=1 --dump_count=8`
+  - Result:
+    - still `CUDA error: unspecified launch failure`
+- Minimal heuristic-split case after removing `griddepcontrol.wait`:
+  - same config but `--num_splits=0`
+  - Result:
+    - still deterministic all-zero output
+    - scheduler dump still `sched 0 1`
+- Conclusion:
+  - `griddepcontrol.wait` alone is not sufficient to explain either symptom.
+  - The remaining highest-value compiler/runtime boundary is the broader SM90 GDC/PDL enablement path itself, not just the single wait instruction.
