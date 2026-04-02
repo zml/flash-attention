@@ -338,3 +338,24 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
     - `launch_with_pdl=false` when it is absent
   - That makes the strongest current root-cause hypothesis:
     - clang-generated SM90 FA3 varlen kernel behavior around the main-kernel PDL path, not scheduler metadata layout.
+
+## 2026-04-02 Direct PDL Confirmation
+
+- Patched the reduced `SingleTileScheduler` build so the main FA3 kernel always launches with PDL when `Varlen=true`.
+- Rebuilt with invocation:
+  - `bbb2f49a-b0f9-4666-999e-8a9d8e33c11d`
+- Reran the minimal explicit-split case:
+  - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=1 --num_heads_k=1 --head_dim=64 --causal=0 --varlen=1 --paged_kv=0 --num_splits=1 --skip_ref=1 --dump_count=8`
+  - Before this patch:
+    - same config crashed with `CUDA error: unspecified launch failure`
+  - After forcing main-kernel PDL on:
+    - no crash
+    - output becomes deterministic all zeros
+    - scheduler dump is `sched 0 0`
+    - sample output remains all zeros
+- Conclusion:
+  - The crash-vs-zeros split is directly controlled by the main-kernel PDL launch path on the reduced varlen repro.
+  - Since this repro already removed paged KV, GQA, and the persistent scheduler, the strongest current root-cause statement is:
+    - clang-built SM90 FA3 varlen kernels are broken around the main-kernel PDL path
+    - `launch_with_pdl=false` manifests as launch failure
+    - `launch_with_pdl=true` manifests as silent all-zero output
