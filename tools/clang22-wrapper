@@ -1,0 +1,2 @@
+#!/bin/bash
+exec -a clang /root/toolchains/llvm-22.1.0-musl/bin/llvm "$@"

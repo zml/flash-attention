@@ -591,3 +591,39 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
     - clang build: broken
   - The failure is not in the harness or in the mathematical setup of the repro input.
   - The remaining root-cause surface is specifically the clang-built SM90 FA3 varlen execution path.
+
+## 2026-04-02 rules_cuda Clang A/B
+
+- Goal:
+  - check whether a `rules_cuda` clang build reproduces the earlier broken LLVM-toolchain behavior, or whether it behaves like the working `rules_cuda` nvcc build
+- Installed clang toolchains:
+  - `clang-18` from `apt`
+  - musl LLVM 22 toolchain at `/root/toolchains/llvm-22.1.0-musl`
+- Practical issue with the musl LLVM 22 archive:
+  - its `bin/clang` and `bin/clang++` entries are symlinks to `bin/llvm`
+  - Bazel invoking them directly was effectively running the generic `llvm` driver
+- Added wrapper scripts so `rules_cuda` can force the correct argv0:
+  - `tools/clang22-wrapper`
+  - `tools/clang22xx-wrapper`
+- Working local build invocation:
+  - `bazel --batch build --jobs=1000 --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 --repo_env=BAZEL_NO_APPLE_CPP_TOOLCHAIN=0 --repo_env=BAZEL_DO_NOT_DETECT_SWIFT_TOOLCHAIN=0 --repo_env=CC=/root/flash-attention/tools/clang22-wrapper --repo_env=CXX=/root/flash-attention/tools/clang22xx-wrapper --repo_env=CUDA_CLANG_PATH=/root/flash-attention/tools/clang22-wrapper --@rules_cuda//cuda:compiler=clang //:fa3_sm90_full_repro`
+- Exact oracle run under the `rules_cuda` clang build:
+  - `FA3_REPRO_DEBUG=1 ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0 --input_mode=uniform_const_v --dump_count=8`
+- Result:
+  - `PASS`
+  - `compare max_abs=0.000000`
+  - output sample is exact `0.125000`
+  - `lse_sample` is sane:
+    - `0.000000 0.693147 1.098612 1.386294 1.609438 1.791759 1.945910 2.079442`
+  - scheduler becomes `sched 16 1`
+- Llama-like shape sanity check under the same build:
+  - `FA3_REPRO_DEBUG=1 ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=2048 --seqlen_k=2048 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0 --input_mode=uniform_const_v --dump_count=8 --skip_ref=1 --iters=1`
+  - result:
+    - `PASS`
+    - sample output is exact `0.125000`
+    - `lse_sample` remains sane
+    - scheduler becomes `sched 512 1`
+- Current practical conclusion:
+  - `rules_cuda + clang` does **not** reproduce the earlier broken LLVM-toolchain behavior on this real FA3 path
+  - for this repro, `rules_cuda + clang` behaves like the working `rules_cuda + nvcc` build, not like the original broken clang path
+  - that makes `rules_cuda` a viable compiler path for continued repro work on this machine
