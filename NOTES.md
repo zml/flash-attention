@@ -154,6 +154,18 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
 - Additional note from the debug print:
   - `capi/capi_sm90.cc` reports `total_k=batch_size * getDim(k, 1)` even for paged KV, so for `seqlen_k=64,page_size=16` it prints `total_k=16`, and for `seqlen_k=2048,page_size=1024` it prints `total_k=1024`.
   - This may or may not be causal for forward correctness, but it is inconsistent with the logical KV length and should be audited.
+- Follow-up audit:
+  - Patched `capi/capi_sm90.cc` so paged-KV reports logical `total_k = batch_size_k * seqlen_k`.
+  - Rebuilt `//:fa3_sm90_full_repro` with invocation:
+    - `0b94dd11-9902-47fd-a24e-eb09320df3e9`
+  - Reran the same two FA3 dynamic-split repros.
+  - Result:
+    - debug print now shows correct `total_k` (`64` and `2048`)
+    - behavior is unchanged
+    - small paged-KV case still returns deterministic all-zero outputs and fails reference
+    - exact llama-like paged-KV case still returns all-zero sampled outputs
+  - Conclusion:
+    - the incorrect paged-KV `total_k` accounting was a real wrapper bug, but it is not sufficient to explain the observed clang FA3 wrong-output path.
 - FA2 control status:
   - Tried building `//:fa2_llama_repro`, but the reduced FA2 target currently fails to link because it depends on the full `:capi` dispatcher, which references many FA2 kernels not present in the reduced FA2 library.
   - This is a separate build-system issue in the control target, not yet a runtime result.

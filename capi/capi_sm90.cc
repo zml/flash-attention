@@ -504,9 +504,11 @@ mha_fwd(const FlashattnTensor *q, // (b, s_q, h, d) or (total_q, h, d) if there 
     int const num_pages = !paged_KV ? 0 : getDim(k, 0);
     int const page_size = !paged_KV ? 1 : getDim(k, 1);
     int const seqlen_k = max_seqlen_k == -1 ? (!paged_KV ? getDim(k, 1) : max_num_pages_per_seq * page_size) : max_seqlen_k;
-    int const total_k = !is_varlen_k ? batch_size * getDim(k, 1) : getDim(k, 0);
     int const num_heads_k = getDim(k, -2);
     int const batch_size_k = !paged_KV ? (!is_varlen_k ? getDim(k, 0) : getDim(cu_seqlens_k, 0) - 1) : getDim(page_table, 0);
+    int const total_k = paged_KV
+        ? batch_size_k * seqlen_k
+        : (!is_varlen_k ? batch_size * getDim(k, 1) : getDim(k, 0));
     //if (!kv_batch_idx_.has_value()) {
     CAPI_CHECK(batch_size == batch_size_k, "batch_size must be equal to batch_size_k");
     //}
