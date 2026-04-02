@@ -471,6 +471,19 @@ cc_binary(
     ],
 )
 
+cc_binary(
+    name = "fa3_sm90_full_repro",
+    srcs = ["tests/fa3_sm90_repro.cc"],
+    copts = ["--std=c++20"],
+    deps = [
+        ":capi-hdrs",
+        ":capi-sm90",
+        ":flashattn-sm90",
+        "@cuda//cuda:cuda",
+        "@cuda//cuda:cuda_driver",
+    ],
+)
+
 tar(
     name = "flashattn_archive",
     srcs = [

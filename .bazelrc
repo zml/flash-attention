@@ -47,7 +47,7 @@ common:remote   --grpc_keepalive_time=30s
 common:remote   --remote_executor=grpcs://remote.buildbuddy.io
 common:remote   --experimental_remote_downloader=grpcs://remote.buildbuddy.io
 common:remote   --extra_execution_platforms=@llvm//:rbe_platform
-common:remote   --jobs=4000
+common:remote   --jobs=1000
 
 # Enable remote execution on CI by default.
 common:ci       --config=remote

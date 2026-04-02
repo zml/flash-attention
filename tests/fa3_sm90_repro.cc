@@ -40,6 +40,9 @@ struct Options {
     bool bf16 = true;
     int num_splits = 1;
     bool varlen = true;
+    bool paged_kv = true;
+    int page_size = 16;
+    int seqused_k = -1;
     float atol = 3e-2f;
     float rtol = 3e-2f;
 };
@@ -85,6 +88,9 @@ Options ParseOptions(int argc, char** argv) {
         else if (ParseArg(arg, "bf16", &value)) opts.bf16 = ParseBool(value);
         else if (ParseArg(arg, "num_splits", &value)) opts.num_splits = std::stoi(value);
         else if (ParseArg(arg, "varlen", &value)) opts.varlen = ParseBool(value);
+        else if (ParseArg(arg, "paged_kv", &value)) opts.paged_kv = ParseBool(value);
+        else if (ParseArg(arg, "page_size", &value)) opts.page_size = std::stoi(value);
+        else if (ParseArg(arg, "seqused_k", &value)) opts.seqused_k = std::stoi(value);
         else if (ParseArg(arg, "atol", &value)) opts.atol = std::stof(value);
         else if (ParseArg(arg, "rtol", &value)) opts.rtol = std::stof(value);
         else if (arg == "--help") {
@@ -93,6 +99,7 @@ Options ParseOptions(int argc, char** argv) {
                 << "[--batch=N] [--seqlen_q=N] [--seqlen_k=N] [--num_heads=N] "
                 << "[--num_heads_k=N] [--head_dim=N] [--causal=0|1] [--iters=N] "
                 << "[--seed=N] [--bf16=0|1] [--num_splits=N] [--varlen=0|1] "
+                << "[--paged_kv=0|1] [--page_size=N] [--seqused_k=N] "
                 << "[--atol=F] [--rtol=F]\n";
             std::exit(0);
         } else {
@@ -102,6 +109,14 @@ Options ParseOptions(int argc, char** argv) {
     }
     if (opts.num_heads % opts.num_heads_k != 0) {
         std::cerr << "num_heads must be divisible by num_heads_k\n";
+        std::exit(1);
+    }
+    if (opts.page_size <= 0 || opts.page_size % 16 != 0) {
+        std::cerr << "page_size must be positive and divisible by 16\n";
+        std::exit(1);
+    }
+    if (opts.seqused_k > opts.seqlen_k) {
+        std::cerr << "seqused_k must be <= seqlen_k\n";
         std::exit(1);
     }
     return opts;
@@ -234,6 +249,31 @@ std::vector<float> CpuReference(
     return out;
 }
 
+void FillPagedKv(
+    std::vector<uint16_t>* paged,
+    const std::vector<uint16_t>& logical,
+    const Options& opts,
+    int max_pages_per_seq) {
+    const int hk = opts.num_heads_k;
+    const int d = opts.head_dim;
+    const int logical_stride = hk * d;
+    const int page_stride = opts.page_size * logical_stride;
+    std::fill(paged->begin(), paged->end(), 0);
+    for (int ib = 0; ib < opts.batch; ++ib) {
+        for (int ik = 0; ik < opts.seqlen_k; ++ik) {
+            const int page_idx = ik / opts.page_size;
+            const int page_offset = ik % opts.page_size;
+            const int phys_page = ib * max_pages_per_seq + page_idx;
+            const size_t dst_base =
+                static_cast<size_t>(phys_page) * page_stride +
+                static_cast<size_t>(page_offset) * logical_stride;
+            const size_t src_base =
+                static_cast<size_t>(ib * opts.seqlen_k + ik) * logical_stride;
+            std::copy_n(logical.data() + src_base, logical_stride, paged->data() + dst_base);
+        }
+    }
+}
+
 Stats Compare(const std::vector<float>& ref, const std::vector<float>& got) {
     Stats s;
     for (size_t i = 0; i < ref.size(); ++i) {
@@ -263,41 +303,72 @@ bool HasNaN(const std::vector<float>& x) {
 
 int main(int argc, char** argv) {
     const Options opts = ParseOptions(argc, argv);
+    const int effective_seqlen_k = opts.seqused_k >= 0 ? opts.seqused_k : opts.seqlen_k;
+    const int max_pages_per_seq = std::max(1, (opts.seqlen_k + opts.page_size - 1) / opts.page_size);
+    const int num_pages = opts.batch * max_pages_per_seq;
 
     const std::vector<int64_t> q_dims = opts.varlen
         ? std::vector<int64_t>{opts.batch * opts.seqlen_q, opts.num_heads, opts.head_dim}
         : std::vector<int64_t>{opts.batch, opts.seqlen_q, opts.num_heads, opts.head_dim};
-    const std::vector<int64_t> kv_dims = opts.varlen
+    const std::vector<int64_t> kv_dims = opts.paged_kv
+        ? std::vector<int64_t>{num_pages, opts.page_size, opts.num_heads_k, opts.head_dim}
+        : opts.varlen
         ? std::vector<int64_t>{opts.batch * opts.seqlen_k, opts.num_heads_k, opts.head_dim}
         : std::vector<int64_t>{opts.batch, opts.seqlen_k, opts.num_heads_k, opts.head_dim};
     const std::vector<int64_t> lse_dims = opts.varlen
         ? std::vector<int64_t>{opts.num_heads, opts.batch * opts.seqlen_q}
         : std::vector<int64_t>{opts.batch, opts.num_heads, opts.seqlen_q};
-    const std::vector<int64_t> sched_dims = {1};
+    const std::vector<int64_t> sched_dims = {opts.batch + 1};
     const std::vector<int64_t> cu_dims = {opts.batch + 1};
+    const std::vector<int64_t> page_table_dims = {opts.batch, max_pages_per_seq};
+    const std::vector<int64_t> seqused_dims = {opts.batch};
 
     const size_t q_elems = Product(q_dims);
     const size_t kv_elems = Product(kv_dims);
     const size_t out_elems = q_elems;
     const size_t lse_elems = Product(lse_dims);
     const size_t cu_elems = Product(cu_dims);
+    const size_t sched_elems = Product(sched_dims);
+    const size_t page_table_elems = Product(page_table_dims);
+    const size_t seqused_elems = Product(seqused_dims);
 
     std::vector<uint16_t> h_q(q_elems);
+    std::vector<uint16_t> h_k_logical(
+        static_cast<size_t>(opts.batch) * opts.seqlen_k * opts.num_heads_k * opts.head_dim);
+    std::vector<uint16_t> h_v_logical(
+        static_cast<size_t>(opts.batch) * opts.seqlen_k * opts.num_heads_k * opts.head_dim);
     std::vector<uint16_t> h_k(kv_elems);
     std::vector<uint16_t> h_v(kv_elems);
     FillInput(&h_q, opts);
-    FillInput(&h_k, opts);
-    FillInput(&h_v, opts);
+    FillInput(&h_k_logical, opts);
+    FillInput(&h_v_logical, opts);
+    if (opts.paged_kv) {
+        FillPagedKv(&h_k, h_k_logical, opts, max_pages_per_seq);
+        FillPagedKv(&h_v, h_v_logical, opts, max_pages_per_seq);
+    } else {
+        h_k = h_k_logical;
+        h_v = h_v_logical;
+    }
 
     const std::vector<float> q_f = DecodeToFloat(h_q, opts.bf16);
-    const std::vector<float> k_f = DecodeToFloat(h_k, opts.bf16);
-    const std::vector<float> v_f = DecodeToFloat(h_v, opts.bf16);
-    const std::vector<float> ref = CpuReference(q_f, k_f, v_f, opts);
+    const std::vector<float> k_f = DecodeToFloat(h_k_logical, opts.bf16);
+    const std::vector<float> v_f = DecodeToFloat(h_v_logical, opts.bf16);
+    Options ref_opts = opts;
+    ref_opts.seqlen_k = effective_seqlen_k;
+    const std::vector<float> ref = CpuReference(q_f, k_f, v_f, ref_opts);
     std::vector<int32_t> h_cu_q(cu_elems);
     std::vector<int32_t> h_cu_k(cu_elems);
+    std::vector<int32_t> h_page_table(page_table_elems);
+    std::vector<int32_t> h_seqused_k(seqused_elems, effective_seqlen_k);
     for (int i = 0; i <= opts.batch; ++i) {
         h_cu_q[i] = i * opts.seqlen_q;
         h_cu_k[i] = i * opts.seqlen_k;
+    }
+    for (int ib = 0; ib < opts.batch; ++ib) {
+        for (int page = 0; page < max_pages_per_seq; ++page) {
+            h_page_table[static_cast<size_t>(ib) * max_pages_per_seq + page] =
+                ib * max_pages_per_seq + page;
+        }
     }
 
     uint16_t* d_q = nullptr;
@@ -307,6 +378,8 @@ int main(int argc, char** argv) {
     float* d_lse = nullptr;
     int32_t* d_cu_q = nullptr;
     int32_t* d_cu_k = nullptr;
+    int32_t* d_page_table = nullptr;
+    int32_t* d_seqused_k = nullptr;
     int* d_sched = nullptr;
 
     CUDA_CHECK(cudaMalloc(&d_q, q_elems * sizeof(uint16_t)));
@@ -315,17 +388,33 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaMalloc(&d_out, out_elems * sizeof(uint16_t)));
     CUDA_CHECK(cudaMalloc(&d_lse, lse_elems * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_cu_q, cu_elems * sizeof(int32_t)));
-    CUDA_CHECK(cudaMalloc(&d_cu_k, cu_elems * sizeof(int32_t)));
-    CUDA_CHECK(cudaMalloc(&d_sched, sizeof(int)));
+    if (!opts.paged_kv) {
+        CUDA_CHECK(cudaMalloc(&d_cu_k, cu_elems * sizeof(int32_t)));
+    }
+    if (opts.paged_kv) {
+        CUDA_CHECK(cudaMalloc(&d_page_table, page_table_elems * sizeof(int32_t)));
+    }
+    if (opts.seqused_k >= 0) {
+        CUDA_CHECK(cudaMalloc(&d_seqused_k, seqused_elems * sizeof(int32_t)));
+    }
+    CUDA_CHECK(cudaMalloc(&d_sched, sched_elems * sizeof(int)));
 
     CUDA_CHECK(cudaMemcpy(d_q, h_q.data(), q_elems * sizeof(uint16_t), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_k, h_k.data(), kv_elems * sizeof(uint16_t), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_v, h_v.data(), kv_elems * sizeof(uint16_t), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_cu_q, h_cu_q.data(), cu_elems * sizeof(int32_t), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_cu_k, h_cu_k.data(), cu_elems * sizeof(int32_t), cudaMemcpyHostToDevice));
+    if (!opts.paged_kv) {
+        CUDA_CHECK(cudaMemcpy(d_cu_k, h_cu_k.data(), cu_elems * sizeof(int32_t), cudaMemcpyHostToDevice));
+    }
+    if (opts.paged_kv) {
+        CUDA_CHECK(cudaMemcpy(d_page_table, h_page_table.data(), page_table_elems * sizeof(int32_t), cudaMemcpyHostToDevice));
+    }
+    if (opts.seqused_k >= 0) {
+        CUDA_CHECK(cudaMemcpy(d_seqused_k, h_seqused_k.data(), seqused_elems * sizeof(int32_t), cudaMemcpyHostToDevice));
+    }
     CUDA_CHECK(cudaMemset(d_out, 0, out_elems * sizeof(uint16_t)));
     CUDA_CHECK(cudaMemset(d_lse, 0, lse_elems * sizeof(float)));
-    CUDA_CHECK(cudaMemset(d_sched, 0, sizeof(int)));
+    CUDA_CHECK(cudaMemset(d_sched, 0, sched_elems * sizeof(int)));
 
     const DataType dtype = opts.bf16 ? CAPI_BFLOAT16 : CAPI_FLOAT16;
     FlashattnTensor q = MakeTensor(d_q, dtype, q_dims);
@@ -335,6 +424,8 @@ int main(int argc, char** argv) {
     FlashattnTensor lse = MakeTensor(d_lse, CAPI_FLOAT, lse_dims);
     FlashattnTensor cu_q = MakeTensor(d_cu_q, CAPI_INT32, cu_dims);
     FlashattnTensor cu_k = MakeTensor(d_cu_k, CAPI_INT32, cu_dims);
+    FlashattnTensor page_table = MakeTensor(d_page_table, CAPI_INT32, page_table_dims);
+    FlashattnTensor seqused_k = MakeTensor(d_seqused_k, CAPI_INT32, seqused_dims);
     FlashattnTensor sched = MakeTensor(d_sched, CAPI_INT32, sched_dims);
 
     const FA3MhaFwdParams params{
@@ -360,17 +451,17 @@ int main(int argc, char** argv) {
     for (int iter = 0; iter < opts.iters; ++iter) {
         CUDA_CHECK(cudaMemset(d_out, 0, out_elems * sizeof(uint16_t)));
         CUDA_CHECK(cudaMemset(d_lse, 0, lse_elems * sizeof(float)));
-        CUDA_CHECK(cudaMemset(d_sched, 0, sizeof(int)));
+        CUDA_CHECK(cudaMemset(d_sched, 0, sched_elems * sizeof(int)));
         fa3_mha_fwd(
             &q,
             &k,
             &v,
             &out,
             opts.varlen ? &cu_q : nullptr,
-            opts.varlen ? &cu_k : nullptr,
+            !opts.paged_kv && opts.varlen ? &cu_k : nullptr,
             nullptr,
-            nullptr,
-            nullptr,
+            opts.seqused_k >= 0 ? &seqused_k : nullptr,
+            opts.paged_kv ? &page_table : nullptr,
             nullptr,
             nullptr,
             nullptr,
@@ -412,6 +503,9 @@ int main(int argc, char** argv) {
               << " dtype=" << (opts.bf16 ? "bf16" : "fp16")
               << " num_splits=" << opts.num_splits
               << " varlen=" << opts.varlen
+              << " paged_kv=" << opts.paged_kv
+              << " page_size=" << opts.page_size
+              << " effective_seqlen_k=" << effective_seqlen_k
               << " iters=" << opts.iters
               << "\n";
     std::cout << "compare"
@@ -436,7 +530,9 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaFree(d_out));
     CUDA_CHECK(cudaFree(d_lse));
     CUDA_CHECK(cudaFree(d_cu_q));
-    CUDA_CHECK(cudaFree(d_cu_k));
+    if (d_cu_k != nullptr) CUDA_CHECK(cudaFree(d_cu_k));
+    if (d_page_table != nullptr) CUDA_CHECK(cudaFree(d_page_table));
+    if (d_seqused_k != nullptr) CUDA_CHECK(cudaFree(d_seqused_k));
     CUDA_CHECK(cudaFree(d_sched));
 
     if (!pass) {
