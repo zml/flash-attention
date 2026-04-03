@@ -671,11 +671,11 @@ cuda_library(
     ],
     archs = ["sm_90a"],
     srcs = [
-        "hopper/flash_prepare_scheduler.cu",
-        "hopper/flash_fwd_combine.cu",
-        "hopper/instantiations/flash_fwd_hdim128_bf16_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim128_bf16_packgqa_sm90.cu",
-        "hopper/instantiations/flash_fwd_hdim128_bf16_paged_sm90.cu",
+        # "hopper/flash_prepare_scheduler.cu",
+        # "hopper/flash_fwd_combine.cu",
+        # "hopper/instantiations/flash_fwd_hdim128_bf16_sm90.cu",
+        # "hopper/instantiations/flash_fwd_hdim128_bf16_packgqa_sm90.cu",
+        # "hopper/instantiations/flash_fwd_hdim128_bf16_paged_sm90.cu",
         "hopper/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.cu",
     ],
 )

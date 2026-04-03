@@ -757,3 +757,85 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
     - `hopper/instantiations/flash_fwd_hdim128_bf16_paged_sm90.cu`
     - then `hopper/instantiations/flash_fwd_hdim128_bf16_packgqa_sm90.cu`
   - if those also produce identical `.nv_fatbin`, move up one layer and compare the archive / final link inputs rather than individual TUs
+
+## 2026-04-03 Force-PIC Device-Code Divergence
+
+- The previous "identical fatbin" result applies only to the non-PIC `.o` path and is not the relevant artifact for the shared-library style build.
+- Re-ran the same reduced TU comparison with `--force_pic` for:
+  - `hopper/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.cu`
+- Exact comparison path:
+  - clang PIC object:
+    - `bazel-out/k8-opt/bin/_objs/flashattn-sm90-llama-aquery/flash_fwd_hdim128_bf16_paged_split_sm90.pic.o`
+  - nvcc PIC object:
+    - same path after clean rebuild with nvcc
+- Copied snapshots:
+  - `/tmp/fa3_forcepic/clang_paged_split.pic.o`
+  - `/tmp/fa3_forcepic/nvcc_paged_split.pic.o`
+- Object-level result:
+  - clang PIC object:
+    - size `2716776`
+    - sha256 `f42dfca5cf0bbbd327dd20c2ff79b563c10c7dac6f7b0091deb6198993a157b0`
+  - nvcc PIC object:
+    - size `1840096`
+    - sha256 `f6de1ef3858dd556c38957365694728f6cc57003b38761486cb49ef1618fdf3f`
+- Extracted fatbins differ materially:
+  - clang fatbin:
+    - `/tmp/fa3_forcepic/clang_paged_split.pic.fatbin`
+    - size `2558808`
+    - sha256 `6910f75733cbcc28d9aabf902270f5901561153174477b68c0b92ea2c986d445`
+  - nvcc fatbin:
+    - `/tmp/fa3_forcepic/nvcc_paged_split.pic.fatbin`
+    - size `1256800`
+    - sha256 `a3f8ed20abac4e96006b7aacbde65b55bdfc3ffcc7f673865acd18c33f9a056d`
+- Installed NVIDIA inspection tools on the machine:
+  - `cuda-cuobjdump-13-0`
+  - `cuda-nvdisasm-13-0`
+  - usable tools:
+    - `/usr/local/cuda-13.0/bin/cuobjdump`
+    - `/usr/local/cuda-13.0/bin/nvdisasm`
+- `cuobjdump` findings on the PIC artifacts:
+  - both objects contain one embedded `sm_90a` cubin
+  - clang PIC object also contains one embedded PTX image
+  - nvcc PIC object does not expose an embedded PTX image
+  - both cubins contain the same kernel entry set
+  - clang cubin `.text.*` sections are much larger than nvcc's for the same kernels
+- Resource-usage comparison from `cuobjdump --dump-resource-usage`:
+  - register counts are effectively the same between clang and nvcc for corresponding kernels
+  - shared memory is the same (`SHARED:1024`)
+  - the standout difference is stack size:
+    - nvcc kernels: `STACK:0` or `STACK:8`
+    - clang kernels: roughly `STACK:880` to `STACK:1424`
+- SASS-level comparison from `cuobjdump --dump-sass`:
+  - clang dump is much larger than nvcc's for the same TU
+  - clang shows many more calls:
+    - `CALL.ABS.NOINC`: 114
+    - `CALL.REL.NOINC`: 76
+  - nvcc only showed:
+    - `CALL.REL.NOINC`: 48
+  - clang also has 48 `RET` sites vs 12 for nvcc
+- Extra clang-only payloads observed:
+  - device-side diagnostic strings in `.nv.global.init`, including:
+    - `Trying to use tma without CUTE_ARCH_TMA_SM90_ENABLED.`
+    - `Trying to use tmast ... without CUTE_ARCH_MMA_SM90_ENABLED`
+  - references to `vprintf` in the clang fatbin / PTX payload
+- Checked the SM90a feature-macro theory directly:
+  - clang with `--cuda-device-only --cuda-gpu-arch=sm_90a` does define:
+    - `__CUDA_ARCH__ 900`
+    - `__CUDA_ARCH_FEAT_SM90_ALL 1`
+  - so the simple "clang forgot the sm90a feature macro" explanation is not supported
+- Strongest compiler-generated clue so far:
+  - clang non-PIC build logs show repeated `ptxas` warning `C7510` on these kernels:
+    - `Potential Performance Loss: wgmma.mma_async instructions are serialized due to wgmma pipeline crossing function boundary at a function call`
+  - this warning appears for the reduced FA3 kernels under clang and was not found in the nvcc logs already captured for the same workflow
+- Current interpretation:
+  - there is no evidence yet of a missing `sm90a` feature define or an RDC setting mismatch
+  - the highest-signal difference is that clang is leaving real function boundaries in the GMMA/WGMMA path
+  - that matches all of:
+    - much larger cubin `.text`
+    - huge device stack frames
+    - many more device calls
+    - explicit `ptxas` warning about WGMMA pipeline serialization across function boundaries
+- Best next step:
+  - isolate which helper calls remain out-of-line in clang for this TU
+  - diff the exact clang vs nvcc compile lines for the PIC action using `-s`
+  - try a direct clang replay of the TU with candidate codegen-affecting deltas only, then check whether the `C7510` warning and large `STACK` usage disappear
