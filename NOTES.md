@@ -722,3 +722,38 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
     - PTX shape
     - backend resource usage
     - final SASS / fatbin contents
+
+## 2026-04-03 Single-TU Bazel Artifact Comparison
+
+- Continued with the reduced target and compared the actual Bazel-produced object for:
+  - `hopper/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.cu`
+- Important correction:
+  - the preserved sandbox object path is just a symlink back into shared `bazel-out`
+  - to keep distinct artifacts, it is necessary to copy the object after one compiler build and then rebuild with the other compiler
+- Manual replay status:
+  - hand-replayed clang / nvcc commands were not faithful enough to the Bazel environment for this TU
+  - manual replay hit explicit-instantiation / namespace issues for this file, while Bazel-built artifacts were clean
+  - switched to comparing Bazel-built objects directly instead of trusting the manual replay
+- Build sequence that produced comparable artifacts:
+  - first built `//:flashattn-sm90-llama-aquery` with `rules_cuda` clang
+  - copied `flash_fwd_hdim128_bf16_paged_split_sm90.o` out of `bazel-out`
+  - rebuilt the same target with `rules_cuda` nvcc using `CC=/usr/bin/gcc` and `CXX=/usr/bin/g++`
+  - copied the refreshed `flash_fwd_hdim128_bf16_paged_split_sm90.o`
+- One pitfall found while rebuilding nvcc:
+  - if nvcc inherits the bootstrapped LLVM clang as host compiler, CUDA 13 rejects it from `host_config.h`
+  - pinning `CC=/usr/bin/gcc` and `CXX=/usr/bin/g++` restores the expected nvcc build path
+- Result for this TU:
+  - the two ELF object files are different at the byte level
+  - `readelf -S` output is identical between the clang and nvcc objects
+  - `nm -a | c++filt` output is identical between the clang and nvcc objects
+  - extracted `.nv_fatbin` blobs are byte-for-byte identical
+  - extracted `.nvFatBinSegment` content is also identical
+  - the differing byte range maps into `.shstrtab` only
+- Interpretation:
+  - for `flash_fwd_hdim128_bf16_paged_split_sm90.cu`, there is no meaningful device-code difference between the current `rules_cuda` clang and nvcc builds
+  - the produced fatbin for this TU matches exactly, so this file is not a lead for the FA3 correctness divergence
+- Best next step:
+  - repeat the same Bazel-artifact comparison on the next reduced TU, starting with:
+    - `hopper/instantiations/flash_fwd_hdim128_bf16_paged_sm90.cu`
+    - then `hopper/instantiations/flash_fwd_hdim128_bf16_packgqa_sm90.cu`
+  - if those also produce identical `.nv_fatbin`, move up one layer and compare the archive / final link inputs rather than individual TUs
