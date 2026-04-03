@@ -643,3 +643,14 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
   - `/root/flash-attention/tools/clang22-wrapper -x cu --cuda-gpu-arch=sm_90a --cuda-path=external/rules_cuda++toolchain+cuda_nvvm_v13.0.88/nvvm --no-offload-new-driver -frandom-seed=bazel-out/k8-opt/bin/_objs/flashattn-sm90/flash_fwd_hdim128_bf16_sm90.o -DFLASHATTENTION_DISABLE_BACKWARD -DFLASHATTENTION_DISABLE_DROPOUT -DFLASHATTENTION_DISABLE_SOFTCAP -DFLASHATTENTION_VARLEN_ONLY -DFLASHATTENTION_DISABLE_SM8x -DFLASHATTENTION_DISABLE_APPENDKV -DFLASHATTENTION_DISABLE_CLUSTER -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED -DCUTLASS_ENABLE_GDC_FOR_SM90 -Iexternal/rules_cuda++toolchain+cuda_cudart_v13.0.96/cudart/include -Iexternal/rules_cuda++toolchain+cuda_nvcc_v13.0.88/nvcc/include -Iexternal/rules_cuda++toolchain+cuda_nvvm_v13.0.88/nvvm/include -Iexternal/rules_cuda++toolchain+cuda_cccl_v13.0.85/cccl/include -Iexternal/rules_cuda++toolchain+cuda_crt_v13.0.88/crt/include -Iexternal/+http_archive+cccl/libcudacxx/include -Iexternal/rules_cuda++toolchain+cuda_curand_v10.4.0.35/curand/include -Icsrc -Icsrc/cutlass/include -Icsrc/flash_attn/src -O2 -DNDEBUG -fPIC -c hopper/instantiations/flash_fwd_hdim128_bf16_sm90.cu -o bazel-out/k8-opt/bin/_objs/flashattn-sm90/flash_fwd_hdim128_bf16_sm90.o`
 - Action environment:
   - `PATH=/root/flash-attention/tools:external/rules_cuda++toolchain+cuda_nvvm_v13.0.88/nvvm/nvvm/bin:external/rules_cuda++toolchain+cuda_nvcc_v13.0.88/nvcc/bin:/bin:/usr/bin:/usr/local/bin`
+
+## 2026-04-03 Bootstrap Script
+
+- Added `bootstrap.sh` at the repo root to make the current `rules_cuda` + clang setup reproducible on a fresh machine.
+- The script now:
+  - installs `curl`, `zstd`, `g++-12`, and `libstdc++-12-dev`
+  - downloads the bootstrapped LLVM archive into `$HOME/.cache`
+  - extracts it under `$HOME/.cache/llvm-toolchain`
+  - replaces `bin/clang` and `bin/clang++` symlinks with hardlinks inside that install so clang resolves its resource dir correctly
+  - initializes `csrc/cutlass` and `csrc/composable_kernel`
+- Updated `AGENTS.md` to point future work on this branch at `./bootstrap.sh` and to document the Bazel arguments for the local `rules_cuda` + clang build.
