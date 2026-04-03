@@ -723,16 +723,20 @@ cc_library(
 
 cuda_library(
     name = "clang-gmma-boundary-repro",
-    srcs = ["tools/clang_gmma_boundary_repro.cu"],
+    srcs = ["hopper/clang_gmma_boundary_repro.cu"],
     includes = [
+        "csrc",
         "csrc/cutlass/include",
+        "hopper",
     ],
     deps = CUDA_HEADER_DEPS + [
         ":cute",
         ":cutlass",
     ],
     copts = [
+        "-Icsrc",
         "-Icsrc/cutlass/include",
+        "-Ihopper",
     ],
     archs = ["sm_90a"],
 )

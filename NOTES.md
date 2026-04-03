@@ -262,7 +262,7 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
 ## 2026-04-03 Standalone GMMA Boundary Repro Draft
 
 - Added a new standalone Hopper WGMMA toy TU:
-  - `tools/clang_gmma_boundary_repro.cu`
+  - `hopper/clang_gmma_boundary_repro.cu`
 - Added a matching build target:
   - `//:clang-gmma-boundary-repro`
 - Intent:
@@ -273,7 +273,11 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
   - uses shared-memory A/B tiles with `GMMA::Layout_K_SW128_Atom`
   - uses `SM90_64x64x16_F16F16F16_SS`
   - routes the work through `gmma_mainloop -> gmma_step -> gmma_wrapper -> gmma_leaf`
-  - constructs the MMA slice and fragments inside the helper path instead of the kernel body, so the same source compiles under both clang and nvcc
+  - second iteration mirrors more of the FA3 shape:
+    - nested lambdas inside `gmma_wrapper`
+    - a local `gmma(...)` helper modeled on `hopper/utils.h`
+    - `convert_layout_acc_Aregs(...)` plus `convert_type_out(...)` in the helper path
+  - kept self-contained instead of directly including `hopper/utils.h` because the local header include path from this target was unreliable
 - Build results:
   - clang:
     - `bazel build --jobs=8 --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 --repo_env=CUDA_CLANG_PATH=$HOME/.cache/llvm-toolchain/bin/clang --repo_env=CC=$HOME/.cache/llvm-toolchain/bin/clang --repo_env=CXX=$HOME/.cache/llvm-toolchain/bin/clang++ --@rules_cuda//cuda:compiler=clang //:clang-gmma-boundary-repro`
@@ -306,9 +310,35 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
   - this first standalone toy does **not** yet reproduce the pathological clang code shape from the FA3 TU
   - no obvious `CALL`, `CALL.ABS`, `STL`, or `LDL` inflation shows up in the SASS dumps
   - clang PTX does contain the expected `wgmma.mma_async` instructions, but not the bad out-of-line helper-call pattern seen in `flash_fwd_hdim128_bf16_paged_split_sm90.cu`
+- Second iteration comparison:
+  - clean clang snapshots:
+    - `/tmp/gmma_repro_compare_v2/clang.o`
+    - `/tmp/gmma_repro_compare_v2/clang.pic.o`
+    - `.o == .pic.o`
+    - sha256: `370237b9825a84dd510fe33039538df12312aeb2c77f9de2b7823b43c60a6783`
+  - clean nvcc snapshots:
+    - `/tmp/gmma_repro_compare_v2/nvcc.o`
+    - `/tmp/gmma_repro_compare_v2/nvcc.pic.o`
+    - `.o != .pic.o`
+    - sha256:
+      - non-PIC: `bb86e93b421a090138171fa51bca08f8426abbc14be7dc0da1bfd2f9cde1f366`
+      - PIC: `3805154bc6ba07e1ef9c73110e75c3529bd7da508a249c593d6d337a338bcb37`
+  - dumps:
+    - `/tmp/gmma_repro_compare_v2/dumps/clang.ptx`
+    - `/tmp/gmma_repro_compare_v2/dumps/clang.sass`
+    - `/tmp/gmma_repro_compare_v2/dumps/nvcc.sass`
+  - resource usage still stays small and matched:
+    - clang: `REG:96 STACK:0 SHARED:1024 GLOBAL:0`
+    - nvcc: `REG:96 STACK:0 SHARED:1024 GLOBAL:12 CONSTANT[4]:96`
+  - still no `CALL`, `CALL.ABS`, `STL`, or `LDL` inflation in either SASS dump
+  - still no `call.uni` in clang PTX
 - Conclusion:
   - useful baseline, not yet the smoking-gun reproducer
-  - next iteration should move closer to the actual FA3 mainloop structure, likely by instantiating or partially mirroring `flash::CollectiveMainloopFwdSm90::mma(...)` rather than only a generic CuTe WGMMA helper chain
+  - nested lambdas plus a local `flash::gemm`-style helper are still not enough by themselves
+  - next iteration should move closer to the actual FA3 mainloop structure, likely by partially mirroring `flash::CollectiveMainloopFwdSm90::mma(...)` state setup:
+    - pipeline state / barrier token flow
+    - `BlockMN_t::get_n_block_min_max(...)`
+    - the real `fwd_step` closure around both QK and PV paths
 - Small paged-KV dynamic-split repro with prep bypass:
   - `FA3_REPRO_DEBUG=1 FA3_REPRO_SKIP_SCHED_PREP=1 ...`
   - Launch geometry is the same as above
