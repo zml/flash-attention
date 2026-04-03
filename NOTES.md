@@ -654,3 +654,71 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
   - replaces `bin/clang` and `bin/clang++` symlinks with hardlinks inside that install so clang resolves its resource dir correctly
   - initializes `csrc/cutlass` and `csrc/composable_kernel`
 - Updated `AGENTS.md` to point future work on this branch at `./bootstrap.sh` and to document the Bazel arguments for the local `rules_cuda` + clang build.
+
+## 2026-04-03 Llama-Focused rules_cuda Flag Comparison
+
+- Added two analysis-only targets in `BUILD.bazel`:
+  - `//:flashattn-sm90-llama-aquery`
+  - `//:capi-sm90-llama-aquery`
+- Purpose:
+  - keep the full `flashattn-sm90` / `capi-sm90` define surface
+  - reduce the CUDA source set to the smallest llama-like FA3 forward subset
+  - current CUDA `srcs` are:
+    - `hopper/flash_prepare_scheduler.cu`
+    - `hopper/flash_fwd_combine.cu`
+    - `hopper/instantiations/flash_fwd_hdim128_bf16_sm90.cu`
+    - `hopper/instantiations/flash_fwd_hdim128_bf16_packgqa_sm90.cu`
+    - `hopper/instantiations/flash_fwd_hdim128_bf16_paged_sm90.cu`
+    - `hopper/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.cu`
+- `bazel aquery` now works cleanly on the reduced target for both compiler modes:
+  - clang:
+    - `bazel aquery --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 --repo_env=CUDA_CLANG_PATH=$HOME/.cache/llvm-toolchain/bin/clang --repo_env=CC=$HOME/.cache/llvm-toolchain/bin/clang --repo_env=CXX=$HOME/.cache/llvm-toolchain/bin/clang++ --@rules_cuda//cuda:compiler=clang 'mnemonic("CudaCompile", deps(//:flashattn-sm90-llama-aquery))'`
+  - nvcc:
+    - `bazel aquery --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 'mnemonic("CudaCompile", deps(//:flashattn-sm90-llama-aquery))'`
+- Representative device compile action compared on:
+  - `hopper/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.cu`
+- First obvious clang vs nvcc differences from `aquery`:
+  - clang front-end:
+    - executable is `$HOME/.cache/llvm-toolchain/bin/clang`
+    - uses `--cuda-gpu-arch=sm_90a`
+    - uses `--cuda-path=external/rules_cuda++toolchain+cuda_nvvm_v13.0.88/nvvm`
+    - uses `--no-offload-new-driver`
+    - passes host-style warning / hardening flags directly to clang
+    - does **not** add nvcc-only CUDA convenience flags such as `--expt-relaxed-constexpr`, `--extended-lambda`, or `--dopt on`
+  - nvcc front-end:
+    - executable is `external/rules_cuda++toolchain+cuda_nvcc_v13.0.88/nvcc/bin/nvcc`
+    - uses `-gencode arch=compute_90a,code=sm_90a`
+    - forces `-ccbin /usr/bin/gcc`
+    - adds `--dopt on`
+    - adds `--expt-relaxed-constexpr`
+    - adds `--extended-lambda`
+    - forwards most host flags via repeated `-Xcompiler ...`
+- Host `capi_sm90.cc` compile comparison is much less interesting:
+  - same include / define surface on both sides
+  - main difference is clang host compile vs `/usr/bin/gcc` host compile
+  - no obvious FA3-specific delta beyond the host compiler itself
+- Tried the user's suggested `bazel build -s --sandbox_debug --jobs=1 --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 //:flashattn-sm90-llama-aquery` flow for nvcc:
+  - log captured at `/tmp/nvcc_llama_build_s.log`
+  - this successfully shows exact subcommands plus preserved sandbox shell entry points
+  - example preserved sandbox shell:
+    - `/tmp/bazel/_bazel_shadeform/0399586b74595f2f241f691534d24f6b/sandbox/linux-sandbox/<N>/execroot/_main`
+  - that path should be the cleanest place to replay one extracted nvcc subcommand with `-v`
+- Current practical next step:
+  - replay the preserved nvcc subcommand for `flash_fwd_hdim128_bf16_paged_split_sm90.cu` from its sandbox with `-v`
+  - compare `cudafe++`, `cicc`, `ptxas`, and fatbin options against the clang-produced device pipeline
+- Constraint for the next round:
+  - do not assume a system CUDA install
+  - use only the Bazel `rules_cuda` toolchain payloads and the exact extracted clang / nvcc command lines
+- Next comparison plan:
+  - work on a single TU, starting with `hopper/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.cu`
+  - replay the exact clang and nvcc compile lines manually
+  - save intermediates where possible:
+    - preprocessed source
+    - PTX or device-only output
+    - `ptxas` / backend verbose output
+    - final cubin / object metadata
+  - compare:
+    - front-end flags
+    - PTX shape
+    - backend resource usage
+    - final SASS / fatbin contents

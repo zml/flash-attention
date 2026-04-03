@@ -632,6 +632,95 @@ cc_library(
     alwayslink = True,
 )
 
+cuda_library(
+    name = "flashattn-sm90-llama-aquery",
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_COMPILATION_HEADER_DEPS + [
+        "@cccl//:cub_headers",
+        "@cccl//:thrust_headers",
+        ":capi-hdrs",
+        "//:flashattn-sm90-headers",
+        "//:cute",
+        "//:cutlass",
+        "//:c10_stub",
+        "//:ATen_stub",
+    ],
+    defines = [
+        "FLASHATTENTION_DISABLE_BACKWARD",
+        "FLASHATTENTION_DISABLE_DROPOUT",
+        "FLASHATTENTION_DISABLE_SOFTCAP",
+        "FLASHATTENTION_VARLEN_ONLY",
+        "FLASHATTENTION_DISABLE_SM8x",
+        "FLASHATTENTION_DISABLE_APPENDKV",
+        "FLASHATTENTION_DISABLE_CLUSTER",
+        "CUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED",
+        "CUTLASS_ENABLE_GDC_FOR_SM90",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Icsrc/flash_attn/src",
+        "-U__CUDA_NO_HALF_OPERATORS__",
+        "-U__CUDA_NO_HALF_CONVERSIONS__",
+        "-U__CUDA_NO_HALF2_OPERATORS__",
+        "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+    ],
+    archs = ["sm_90a"],
+    srcs = [
+        "hopper/flash_prepare_scheduler.cu",
+        "hopper/flash_fwd_combine.cu",
+        "hopper/instantiations/flash_fwd_hdim128_bf16_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim128_bf16_packgqa_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim128_bf16_paged_sm90.cu",
+        "hopper/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.cu",
+    ],
+)
+
+cc_library(
+    name = "capi-sm90-llama-aquery",
+    srcs = ["capi/capi_sm90.cc"],
+    includes = [
+        "capi",
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    defines = [
+        "FLASHATTENTION_DISABLE_BACKWARD",
+        "FLASHATTENTION_DISABLE_DROPOUT",
+        "FLASHATTENTION_DISABLE_SOFTCAP",
+        "FLASHATTENTION_VARLEN_ONLY",
+        "FLASHATTENTION_DISABLE_SM8x",
+        "FLASHATTENTION_DISABLE_APPENDKV",
+        "FLASHATTENTION_DISABLE_CLUSTER",
+        "CUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED",
+        "CUTLASS_ENABLE_GDC_FOR_SM90",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
+        "-U__CUDA_NO_HALF_OPERATORS__",
+        "-U__CUDA_NO_HALF_CONVERSIONS__",
+        "-U__CUDA_NO_HALF2_OPERATORS__",
+        "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+        "--std=c++20",
+    ],
+    deps = CUDA_HEADER_DEPS + [
+        ":capi-hdrs",
+        "//:flashattn-sm90-headers",
+        "//:cute",
+        "//:cutlass",
+        "//:c10_stub",
+        "//:ATen_stub",
+    ],
+    alwayslink = True,
+)
+
 cc_shared_library(
     name = "flashattn_so",
     shared_lib_name = "libflashattn.so",
