@@ -339,6 +339,50 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
     - pipeline state / barrier token flow
     - `BlockMN_t::get_n_block_min_max(...)`
     - the real `fwd_step` closure around both QK and PV paths
+
+## 2026-04-03 FA2 Single-TU Control
+
+- Added a single-TU FA2 comparison target:
+  - `//:flashattn-fa2-single-aquery`
+  - source: `csrc/flash_attn/src/flash_fwd_hdim64_bf16_sm80.cu`
+- Built clean snapshots with both compilers:
+  - clang:
+    - BuildBuddy: `192fac51-6019-41b9-8b47-ac735d2a19df`
+    - copied objects:
+      - `/tmp/fa2_single_compare/clang.o`
+      - `/tmp/fa2_single_compare/clang.pic.o`
+    - `.o == .pic.o`
+    - size: `2563176`
+    - sha256: `43532448fea8b72d2e4e8b5e7f292bce269b7c7ed3b4a8409a3ffbfc643c8870`
+  - nvcc:
+    - BuildBuddy: `cb64c5ea-303e-4999-a2b9-809dfdcde347`
+    - copied objects:
+      - `/tmp/fa2_single_compare/nvcc.o`
+      - `/tmp/fa2_single_compare/nvcc.pic.o`
+    - non-PIC size / sha256:
+      - `1543912`
+      - `f404a2544b287cd53176ebba70362100fdbd7149d8474c673cbdf14f38f72cff`
+    - PIC size / sha256:
+      - `1531400`
+      - `175f73eefcb913a8c17f1e92db035e1e0fb774e6baaee99ac09d410ebbc9804e`
+- Extracted cubins:
+  - `/tmp/fa2_single_compare/dumps/clang.pic.1.sm_90a.cubin`
+  - `/tmp/fa2_single_compare/dumps/nvcc.pic.1.sm_90a.cubin`
+- Key device-symbol result:
+  - the actual FA2 kernel entrypoint mangling matches between clang and nvcc
+  - both cubins export the same set of global `flash::flash_fwd_kernel<...>(flash::Flash_fwd_params)` entry symbols
+  - the difference is not “clang chose a different kernel entry name”
+- Secondary symbol differences:
+  - clang cubin is larger:
+    - `1827864` vs `1350672`
+  - clang carries extra weak device helper symbols with names like:
+    - `$_ZN5flash16flash_fwd_kernel...$_ZN5flash22compute_attn_1rowblock...`
+  - nvcc cubin does not carry those extra weak wrapper/helper symbols
+  - both sides still carry expected slowpath helpers like:
+    - `$__internal_N_$__cuda_sm20_rcp_rn_f32_slowpath`
+- Interpretation:
+  - for FA2, the device entrypoint mangling itself is not the issue
+  - clang still appears to emit more auxiliary device-symbol structure than nvcc, but on this known-good FA2 path the exported kernel entries line up
 - Small paged-KV dynamic-split repro with prep bypass:
   - `FA3_REPRO_DEBUG=1 FA3_REPRO_SKIP_SCHED_PREP=1 ...`
   - Launch geometry is the same as above

@@ -251,6 +251,41 @@ cuda_library(
 )
 
 cuda_library(
+    name = "flashattn-fa2-single-aquery",
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "csrc/flash_attn/src",
+    ],
+    defines = [
+        "FLASHATTENTION_DISABLE_BACKWARD",
+        "FLASHATTENTION_DISABLE_DROPOUT",
+        "FLASHATTENTION_DISABLE_UNEVEN_K",
+    ],
+    deps = CUDA_COMPILATION_HEADER_DEPS + [
+        "//:flashattn-headers",
+        "//:cute",
+        "//:cutlass",
+        "//:c10_stub",
+        "//:ATen_stub",
+    ],
+    copts = [
+        "-Icapi",
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Icsrc/flash_attn/src",
+        "-U__CUDA_NO_HALF_OPERATORS__",
+        "-U__CUDA_NO_HALF_CONVERSIONS__",
+        "-U__CUDA_NO_HALF2_OPERATORS__",
+        "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+    ],
+    archs = FA2_ARCHS,
+    srcs = [
+        "csrc/flash_attn/src/flash_fwd_hdim64_bf16_sm80.cu",
+    ],
+)
+
+cuda_library(
     name = "flashattn-fa2-llama-repro",
     includes = [
         "csrc",
