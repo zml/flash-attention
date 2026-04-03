@@ -721,6 +721,22 @@ cc_library(
     alwayslink = True,
 )
 
+cuda_library(
+    name = "clang-gmma-boundary-repro",
+    srcs = ["tools/clang_gmma_boundary_repro.cu"],
+    includes = [
+        "csrc/cutlass/include",
+    ],
+    deps = CUDA_HEADER_DEPS + [
+        ":cute",
+        ":cutlass",
+    ],
+    copts = [
+        "-Icsrc/cutlass/include",
+    ],
+    archs = ["sm_90a"],
+)
+
 cc_shared_library(
     name = "flashattn_so",
     shared_lib_name = "libflashattn.so",

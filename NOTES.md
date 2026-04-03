@@ -258,6 +258,57 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
   - Result:
     - output still all zeros
     - scheduler metadata still remains `sched 0 1`
+
+## 2026-04-03 Standalone GMMA Boundary Repro Draft
+
+- Added a new standalone Hopper WGMMA toy TU:
+  - `tools/clang_gmma_boundary_repro.cu`
+- Added a matching build target:
+  - `//:clang-gmma-boundary-repro`
+- Intent:
+  - isolate a tiny `sm_90a` CuTe/CUTLASS kernel that wraps one WGMMA path in multiple explicit device helper calls
+  - keep the helper boundaries small enough to inspect directly in PTX/SASS
+  - use it as a candidate for reproducing the clang-side cross-function-boundary behavior without pulling in the full FA3 mainloop
+- Current source shape:
+  - uses shared-memory A/B tiles with `GMMA::Layout_K_SW128_Atom`
+  - uses `SM90_64x64x16_F16F16F16_SS`
+  - routes the work through `gmma_mainloop -> gmma_step -> gmma_wrapper -> gmma_leaf`
+  - constructs the MMA slice and fragments inside the helper path instead of the kernel body, so the same source compiles under both clang and nvcc
+- Build results:
+  - clang:
+    - `bazel build --jobs=8 --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 --repo_env=CUDA_CLANG_PATH=$HOME/.cache/llvm-toolchain/bin/clang --repo_env=CC=$HOME/.cache/llvm-toolchain/bin/clang --repo_env=CXX=$HOME/.cache/llvm-toolchain/bin/clang++ --@rules_cuda//cuda:compiler=clang //:clang-gmma-boundary-repro`
+    - BuildBuddy: `077940bc-d21c-475b-bb50-bd14f9efd50f`
+  - nvcc:
+    - `bazel build --jobs=8 --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 --repo_env=CC=/usr/bin/gcc --repo_env=CXX=/usr/bin/g++ --@rules_cuda//cuda:compiler=nvcc //:clang-gmma-boundary-repro`
+    - BuildBuddy: `b840443d-0433-4bc4-9ae2-776e85baf8ee`
+- Copied comparison artifacts:
+  - clang:
+    - `/tmp/gmma_repro_compare/clang.o`
+    - `/tmp/gmma_repro_compare/clang.pic.o`
+    - `.o == .pic.o`
+    - sha256: `c93233bbb181a76571b1e389119c30561007f3e733798d1732963dd56a30c880`
+  - nvcc:
+    - `/tmp/gmma_repro_compare/nvcc.o`
+    - `/tmp/gmma_repro_compare/nvcc.pic.o`
+    - `.o != .pic.o`
+- Initial inspection:
+  - clang PIC object:
+    - contains one cubin and one PTX image
+    - `REG:96 STACK:0 SHARED:1024 GLOBAL:0`
+  - nvcc PIC object:
+    - contains one cubin and no PTX image
+    - `REG:96 STACK:0 SHARED:1024 GLOBAL:12 CONSTANT[4]:96`
+  - dumped artifacts:
+    - `/tmp/gmma_repro_compare/dumps/clang.ptx`
+    - `/tmp/gmma_repro_compare/dumps/clang.sass`
+    - `/tmp/gmma_repro_compare/dumps/nvcc.sass`
+- Important result:
+  - this first standalone toy does **not** yet reproduce the pathological clang code shape from the FA3 TU
+  - no obvious `CALL`, `CALL.ABS`, `STL`, or `LDL` inflation shows up in the SASS dumps
+  - clang PTX does contain the expected `wgmma.mma_async` instructions, but not the bad out-of-line helper-call pattern seen in `flash_fwd_hdim128_bf16_paged_split_sm90.cu`
+- Conclusion:
+  - useful baseline, not yet the smoking-gun reproducer
+  - next iteration should move closer to the actual FA3 mainloop structure, likely by instantiating or partially mirroring `flash::CollectiveMainloopFwdSm90::mma(...)` rather than only a generic CuTe WGMMA helper chain
 - Small paged-KV dynamic-split repro with prep bypass:
   - `FA3_REPRO_DEBUG=1 FA3_REPRO_SKIP_SCHED_PREP=1 ...`
   - Launch geometry is the same as above
@@ -1033,3 +1084,30 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
     - clang already compiles at `-O2`
     - the bad helper calls are already present in clang PTX
     - the resulting cubin retains those helper functions instead of collapsing them away like nvcc
+
+## 2026-04-03 Standalone GMMA Boundary Repro Draft
+
+- Added a standalone draft reproducer source:
+  - `tools/clang_gmma_boundary_repro.cu`
+- Added a small Bazel target for one-TU analysis:
+  - `//:clang-gmma-boundary-repro`
+- Goal of the draft source:
+  - isolate Hopper WGMMA codegen outside the FA3 kernel
+  - intentionally wrap the `cute::gemm(...)` WGMMA step inside:
+    - `gmma_leaf`
+    - `gmma_wrapper`
+    - `gmma_mainloop`
+  - and use nested lambdas in the helper chain to look more like the `CollectiveMainloopFwdSm90::mma` pattern that clang is currently outlining
+- The draft source uses:
+  - `SM90_64x64x16_F16F16F16_SS<GMMA::Major::K, GMMA::Major::K>`
+  - shared-memory A/B layouts based on:
+    - `GMMA::Layout_K_SW128_Atom`
+  - a single kernel entry:
+    - `clang_gmma_boundary_repro`
+- Important status:
+  - this is currently a source-level draft only
+  - it has not yet been compiled or validated
+  - the intended next check is whether clang emits:
+    - out-of-line helper calls in PTX / cubin
+    - `ptxas` `C7510` warnings
+  - and whether nvcc flattens the same source more aggressively
