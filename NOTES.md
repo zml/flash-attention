@@ -127,16 +127,86 @@ The working hypothesis is no longer "general FA3 runtime repro first." The curre
   - but it is still not enough to reproduce the FA3 clang-only pathological lowering
   - the next missing ingredient is likely the real PV handoff and/or pipeline/barrier state rather than just closure pressure
 
+### Attempt 4
+
+- Same file:
+  - `hopper/clang_gmma_boundary_repro.cu`
+- New shape:
+  - kept the closure-heavy `fwd_step` structure
+  - replaced the fake `axpby` consumer with a real second GMMA handoff
+  - added separate shared-memory `sV`
+  - built a PV-style `tiled_mma_pv`
+  - converted `tSrS -> tOrP_acc -> tOrP`
+  - fed `tOrP` into a second GMMA to produce `tOrO`
+- Build results:
+  - clang:
+    - BuildBuddy: `74a0f8e7-7593-4a77-a501-0eb0cad1b406`
+  - nvcc:
+    - BuildBuddy: `5975ce5a-3a42-4b0f-84db-48de823a7241`
+- Clean copied snapshots:
+  - clang:
+    - `/tmp/gmma_repro_compare_v4/clang.o`
+    - `/tmp/gmma_repro_compare_v4/clang.pic.o`
+    - `.o == .pic.o`
+    - sha256: `619082c5feba138aa2021b374f1bcabd7eebc567036bddcc8e45dc533928c4cd`
+  - nvcc:
+    - `/tmp/gmma_repro_compare_v4/nvcc.o`
+    - `/tmp/gmma_repro_compare_v4/nvcc.pic.o`
+    - non-PIC sha256: `b63678b61272fdb87aeb7a5979a077e9837db31990fe59eb38e48e951b7ace5f`
+    - PIC sha256: `6bdd2034142d6e257ba54848baba6f18231c0eb3785f33cc9515ec7a46d7f371`
+- Important new result:
+  - this is the first standalone reproducer that cleanly separates clang from nvcc in the same way as the FA3 reduced TU
+  - clang emits:
+    - many `C7519`
+    - many `C7517`
+    - `C7510` `wgmma.mma_async instructions are serialized due to wgmma pipeline crossing function boundary`
+  - nvcc emits:
+    - `C7517`
+    - `C7511` `insufficient register resources for the wgmma pipeline`
+    - no `C7510`
+- Resource / code-shape result:
+  - clang:
+    - `REG:128 STACK:928 SHARED:1024 GLOBAL:0`
+    - embedded PTX present
+    - PTX entry explicitly allocates:
+      - `.local .align 16 .b8 __local_depot0[928];`
+    - PTX entry contains two `call.uni` sites into outlined `gmma_leaf` helper bodies
+    - SASS counts:
+      - `CALL.REL:2`
+      - `STL:780`
+      - `LDL:32`
+  - nvcc:
+    - `REG:218 STACK:0 SHARED:1024 GLOBAL:12 CONSTANT[4]:96`
+    - no embedded PTX
+    - no `CALL`, `STL`, or `LDL` found in the SASS dump
+- Key interpretation:
+  - the reproducer now matches the essential clang failure signature:
+    - clang outlines GMMA-adjacent helper code
+    - clang pays for that with a real per-thread stack frame and local-memory traffic
+    - nvcc compiles the same source by keeping everything in registers and staying stack-free
+  - this makes the issue look less like a missing frontend compatibility flag and more like a clang CUDA lowering / outlining choice in the two-stage GMMA handoff pattern
+
 ## Current Interpretation
 
 Nested lambdas plus a local WGMMA helper are not enough on their own.
 
-The likely missing ingredient is more of the real FA3 state/setup around `CollectiveMainloopFwdSm90::mma(...)`, especially:
+Attempt 4 shows that the crucial missing ingredient was the real second-GMMA handoff, not full FA3 pipeline state.
+
+The current best local theory is:
+
+- clang outlines the two-stage GMMA helper path into callable device functions
+- that creates a function-boundary WGMMA pipeline break
+- that in turn introduces a real stack frame and local-memory traffic in the entry kernel
+- nvcc instead accepts much higher register usage and keeps the path inline enough to stay stack-free
+
+The remaining question is whether any clang flag can force the nvcc-like choice, or whether this is simply a clang codegen bug in this source shape.
+
+Additional FA3-specific state may still matter, especially:
 
 - real pipeline/barrier flow
 - `BlockMN_t::get_n_block_min_max(...)`
-- the real `fwd_step` closure shape
-- the interaction between QK and PV paths in the same function body
+- the exact `CollectiveMainloopFwdSm90::mma(...)` closure shape
+- the interaction between QK and PV paths in the same function body under the real scheduler/state objects
 
 ## FA2 Control
 
@@ -171,6 +241,19 @@ Acceptance criteria for a useful reproducer:
 - clang emits out-of-line helper calls or `call.uni` around GMMA while nvcc does not, or
 - clang shows the same `STACK` / `STL` / `LDL` blow-up while nvcc stays flat, or
 - clang reproduces `ptxas` `C7510` WGMMA-boundary warnings on the small TU
+
+The current standalone repro now satisfies all three.
+
+## Immediate Next Step
+
+Use this small reproducer to test whether any clang-side flag can remove the bad lowering shape without changing the source:
+
+- compare exact clang vs nvcc command lines for this TU
+- try clang-side optimization/inlining deltas only
+- accept only changes that remove:
+  - `C7510`
+  - `call.uni` / `CALL.REL`
+  - the `928` byte local stack
 
 ## Historical Notes
 
