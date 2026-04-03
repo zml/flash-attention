@@ -218,6 +218,140 @@ Additional FA3-specific state may still matter, especially:
   - FA2 is known-good on both clang and nvcc
   - compare symbol/cubin differences without Hopper GMMA complications
 
+## New Strategy
+
+The current plan is split into two tracks:
+
+1. Use the standalone GMMA reproducer first to probe clang flag behavior.
+2. Only after a flag or source change shows a clean effect there, try to transfer it to the reduced FA3 TU.
+
+This avoids re-running the large FA3 compile loop blindly and gives a smaller place to reason about what specific clang decisions matter.
+
+## Clang Flag Sweep On Standalone Repro
+
+- Target:
+  - `//:clang-gmma-boundary-repro`
+- Source:
+  - `hopper/clang_gmma_boundary_repro.cu`
+- Baseline bad clang shape:
+  - `C7510`
+  - `REG:128 STACK:928 SHARED:1024`
+  - `CALL.REL:2`
+  - `STL:780`
+  - `LDL:32`
+  - PTX `call.uni:2`
+
+Tested direct clang-side variants:
+
+- `-O3`
+  - no change
+- `-O3 -fno-gpu-rdc`
+  - no change
+- full aggressive inline bundle:
+  - `-O3`
+  - `-fgpu-inline-threshold=100000`
+  - `-finline-functions`
+  - `-finline-hint-functions`
+  - `-finline-max-stacksize=4096`
+  - `-mllvm -inline-threshold=100000`
+  - result:
+    - `C7510` disappears
+    - warning becomes `C7511`
+    - `REG:218 STACK:0 SHARED:1024`
+    - `CALL.REL:0`
+    - `STL:0`
+    - `LDL:0`
+    - PTX `call.uni:0`
+
+Interpretation:
+
+- this is not an RDC issue
+- plain `-O3` is not enough
+- a more aggressive clang inlining/stack-budget configuration can force the standalone reproducer into a nvcc-like zero-stack shape
+
+## Minimum Working Flag Set So Far
+
+Working bundle on the standalone reproducer:
+
+- `-O3`
+- `-fgpu-inline-threshold=100000`
+- `-finline-functions`
+- `-finline-hint-functions`
+- `-finline-max-stacksize=4096`
+- `-mllvm -inline-threshold=100000`
+
+Strict subsets tested and found insufficient:
+
+- `-O3`
+- `-O3 -fgpu-inline-threshold=100000`
+- `-O3 -mllvm -inline-threshold=100000`
+- `-O3 -finline-max-stacksize=4096`
+- `-O3 -finline-functions -finline-hint-functions`
+- `-O3 -fgpu-inline-threshold=100000 -finline-max-stacksize=4096`
+- `-O3 -mllvm -inline-threshold=100000 -finline-max-stacksize=4096`
+- `-O3 -fgpu-inline-threshold=100000 -mllvm -inline-threshold=100000`
+- `-O3 -fgpu-inline-threshold=100000 -finline-functions -finline-hint-functions`
+- `-O3 -mllvm -inline-threshold=100000 -finline-functions -finline-hint-functions`
+- `-O3 -finline-functions -finline-hint-functions -finline-max-stacksize=4096`
+- `-O3 -fgpu-inline-threshold=100000 -finline-functions -finline-hint-functions -finline-max-stacksize=4096`
+- `-O3 -mllvm -inline-threshold=100000 -finline-functions -finline-hint-functions -finline-max-stacksize=4096`
+- `-fgpu-inline-threshold=100000 -finline-functions -finline-hint-functions -finline-max-stacksize=4096 -mllvm -inline-threshold=100000`
+- `-O3 -finline-functions -finline-hint-functions -finline-max-stacksize=4096 -mllvm -inline-threshold=100000`
+- `-O3 -fgpu-inline-threshold=100000 -finline-functions -finline-hint-functions -finline-max-stacksize=4096`
+
+For every subset above, the reproducer stayed in the bad clang shape:
+
+- `C7510`
+- `REG:128 STACK:928`
+- `CALL.REL:2`
+- `STL:780`
+- `LDL:32`
+- PTX `call.uni:2`
+
+Current conclusion:
+
+- the only known working configuration is still the full aggressive inline bundle
+- every leave-one-out and smaller subset tested so far falls back to the bad outlined GMMA path
+
+## Reduced FA3 Transfer Test
+
+- Target:
+  - `//:flashattn-sm90-llama-aquery`
+- TU:
+  - `hopper/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.cu`
+- Artifacts:
+  - baseline:
+    - `/tmp/fa3_inline_bundle_probe/baseline.pic.o`
+    - `/tmp/fa3_inline_bundle_probe/baseline.ptx`
+  - attempted inline-bundle transfer:
+    - `/tmp/fa3_inline_bundle_probe/inline.pic.o`
+    - `/tmp/fa3_inline_bundle_probe/inline.ptx`
+
+Result:
+
+- the copied objects are byte-identical:
+  - `baseline.pic.o` sha256:
+    - `f42dfca5cf0bbbd327dd20c2ff79b563c10c7dac6f7b0091deb6198993a157b0`
+  - `inline.pic.o` sha256:
+    - `f42dfca5cf0bbbd327dd20c2ff79b563c10c7dac6f7b0091deb6198993a157b0`
+- the extracted PTX is also byte-identical:
+  - `baseline.ptx` sha256:
+    - `86aea408ae6d69c8bbf3a5f5bbe30d5ec7b5cd17a88b1b3d6ab1073574eefff2`
+  - `inline.ptx` sha256:
+    - `86aea408ae6d69c8bbf3a5f5bbe30d5ec7b5cd17a88b1b3d6ab1073574eefff2`
+- resource usage and SASS counts are unchanged:
+  - same large `STACK`
+  - same `CALL.REL:76`
+  - same `STL:12223`
+  - same `LDL:4278`
+  - same PTX `call.uni:142`
+
+Interpretation:
+
+- the standalone workaround does not transfer to the reduced FA3 TU through the attempted `bazel build --copt=...` path
+- the most likely explanation is that these added `--copt` flags did not actually affect the CUDA compile action in this `rules_cuda` path
+- before drawing a stronger conclusion, the next step should be to inspect the exact FA3 compile command with `-s` or `aquery` and verify whether the extra clang flags are reaching the device compile at all
+
 ### FA2 device-symbol result
 
 - Extracted cubins:
