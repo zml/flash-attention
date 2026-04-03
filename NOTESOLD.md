@@ -1,0 +1,1187 @@
+# NOTES
+
+## Goal
+
+Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a custom Llama implementation, with FA2 as the known-good comparison point.
+
+## Current Status
+
+- Branch: `llvm-repro`
+- Initial blockers found:
+  - The checkout was missing `csrc/cutlass` and `csrc/composable_kernel` submodules.
+  - `//:fa3_sm90_repro` did not build before submodule init.
+  - After submodule init, the reduced repro target still failed to link because `capi-sm90-repro` could dispatch paged-KV FA3 kernels that `flashattn-sm90-repro` does not compile.
+- Current repro surface:
+  - `tests/fa3_sm90_repro.cc` now supports both the reduced varlen-only path and a paged-KV path with `page_table` plus optional `seqused_k`.
+  - Added a full clang SM90 target in `BUILD.bazel`: `//:fa3_sm90_full_repro`.
+  - `.bazelrc` remote default is now `--jobs=1000`.
+- Current result:
+  - `//:fa3_sm90_full_repro` builds successfully with `bazel build --config remote --jobs=1000`.
+  - The full clang-built FA3 path still fails at runtime with `CUDA error: unspecified launch failure` on `cudaDeviceSynchronize()` before any output comparison.
+
+## What Has Been Tested
+
+- Located the prior repro target in `BUILD.bazel`:
+  - `//:fa3_sm90_repro`
+  - `tests/fa3_sm90_repro.cc`
+- Confirmed hardware and toolchain:
+  - GPU: H100 80GB
+  - Bazel available through Bazelisk
+- Read `capi/capi_sm90.cc`:
+  - FA3 wrapper always requires `scheduler_metadata` when the scheduler path needs it.
+  - Repro build is using `FLASHATTENTION_VARLEN_ONLY`.
+  - Runtime dispatch can instantiate paged-KV and pack-GQA branches unless explicitly compiled out.
+  - Paged-KV mode in the SM90 C API requires rank-4 K/V tensors plus `page_table`, and rejects `cu_seqlens_k`.
+- Confirmed the original harness bug:
+  - The prior harness called FA3 with dense 4D tensors and no `cu_seqlens_*` despite `FLASHATTENTION_VARLEN_ONLY`.
+  - That configuration is not representative for this repro target.
+- Rebuilt after fixing the harness to use varlen-shaped tensors:
+  - Default config still fails.
+  - `--seqlen_q=1 --seqlen_k=1 --num_heads=4 --num_heads_k=4 --head_dim=128 --iters=1` still fails.
+  - `--causal=0` still fails.
+- Added a paged-KV harness mode in `tests/fa3_sm90_repro.cc`:
+  - `--paged_kv=0|1`
+  - `--page_size=N`
+  - `--seqused_k=N`
+  - `--skip_ref=0|1`
+  - In paged mode, the harness generates logical K/V, packs it into page storage, and passes an identity `page_table`.
+- Built and ran the full clang SM90 target:
+  - Build command:
+    - `bazel build --config remote --jobs=1000 //:fa3_sm90_full_repro`
+  - BuildBuddy invocation:
+    - `e1acc423-56da-40bb-ac94-8d297e1bd3f9`
+  - Small full-target varlen+paged config:
+    - `--iters=2 --batch=1 --seqlen_q=8 --seqlen_k=8 --num_heads=4 --num_heads_k=4 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=16`
+    - Result: `CUDA error: unspecified launch failure` at `tests/fa3_sm90_repro.cc:477`
+  - Same full-target geometry with paged KV disabled:
+    - `--iters=2 --batch=1 --seqlen_q=8 --seqlen_k=8 --num_heads=4 --num_heads_k=4 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0`
+    - Result: same launch failure at the same line
+  - Minimal dense/non-paged/non-causal config:
+    - `--batch=1 --seqlen_q=1 --seqlen_k=1 --num_heads=4 --num_heads_k=4 --head_dim=128 --causal=0 --varlen=0 --paged_kv=0 --skip_ref=1`
+    - Result: same launch failure at `tests/fa3_sm90_repro.cc:482`
+  - Minimal varlen/non-paged/non-causal config:
+    - `--batch=1 --seqlen_q=1 --seqlen_k=1 --num_heads=4 --num_heads_k=4 --head_dim=128 --causal=0 --varlen=1 --paged_kv=0 --skip_ref=1`
+    - Result: same launch failure at `tests/fa3_sm90_repro.cc:482`
+  - Minimal varlen/paged/non-causal config:
+    - `--batch=1 --seqlen_q=1 --seqlen_k=1 --num_heads=4 --num_heads_k=4 --head_dim=128 --causal=0 --varlen=1 --paged_kv=1 --page_size=16 --skip_ref=1`
+    - Result: same launch failure at `tests/fa3_sm90_repro.cc:482`
+  - Custom-llama-like head geometry:
+    - `--iters=1 --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=1024`
+    - Result: same launch failure at the same line
+  - Exact IR-sized geometry without CPU reference:
+    - `--iters=1 --batch=1 --seqlen_q=2048 --seqlen_k=2048 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=1024 --skip_ref=1`
+    - Result: same launch failure at `tests/fa3_sm90_repro.cc:482`
+- Current runtime invocation:
+  - Direct execution requires Bazel CUDA redist in `LD_LIBRARY_PATH`.
+  - Using the Bazel-downloaded CUDA 13 runtime resolves the loader error, then the FA3 kernel crashes.
+  - CUDA redist path used so far:
+    - `/root/.cache/bazel/_bazel_root/cache/repos/v1/contents/b84070b7338ac3d07a942ea84b3d3ea67db8e867f439a345cf9acd7e9b9eeef2/079b9eaf-27d6-4139-9001-7b31e6d79fed/lib`
+  - `bazel aquery //:fa3_sm90_full_repro` confirms the target is built through the LLVM CUDA toolchain and uses `clang++` from the Bazel-managed LLVM toolchain inputs.
+
+## Custom Llama IR Clues
+
+- User-provided typed-FFI custom call:
+  - output `bf16[2048,32,128]`
+  - Q `bf16[2048,32,128]`
+  - K/V `bf16[2048,8,128]`
+  - extra `s32[2]` operands plus scratch buffers
+  - `is_causal = true`
+  - `max_seqlen_q = 2048`
+  - `max_seqlen_k = 2048`
+- Best current interpretation:
+  - batch is effectively 1
+  - GQA ratio is `32 / 8 = 4`
+  - at least one `s32[2]` operand is consistent with `cu_seqlens_q = [0, 2048]`
+  - another `s32[2]` operand is plausibly a `page_table` with 2 entries if page size is 1024
+- This is not yet proven from local C++ code because the typed-FFI lowering is not in this repo.
+
+## Next Steps
+
+1. Keep working only from C++/Bazel and the pasted IR surface; avoid Python.
+2. Add a way to skip the CPU reference for very large configs so the exact `2048 x 32 x 128` / `2048 x 8 x 128` geometry can be executed directly.
+3. Probe whether the crash is tied to a specific option boundary:
+   - `varlen=0|1`
+   - `paged_kv=0|1`
+   - `page_size`
+   - `seqused_k`
+   - `causal=0|1`
+   - `num_heads=32`, `num_heads_k=8`, `head_dim=128`
+4. The exact IR-sized paged-KV config is now directly runnable, and it still crashes.
+5. Shrinking below that surface still crashes, including the smallest dense/non-paged/non-causal case tested so far.
+6. Next useful control is FA2 through the same C API harness, to prove the harness path is sound on the same machine while FA3 clang remains broken.
+7. If a non-crashing clang FA3 config is found, compare against CPU reference immediately and record the first wrong-output seed/config.
+
+## Open Questions
+
+- Which typed-FFI operands in the custom call correspond to `page_table`, `scheduler_metadata`, and scratch buffers?
+- Does the custom Llama path pass paged KV with physically rank-4 storage that is bitcast to rank-3 in HLO, or is there a separate lowering layer reshaping it?
+- Is there any clang-built FA3 config on this branch that survives the first sync, or is the current failure unconditional across the SM90 forward path?
+
+## 2026-04-02 Dynamic-Split Findings
+
+- Added temporary FA3 dispatch logging in `capi/capi_sm90.cc`, enabled with `FA3_REPRO_DEBUG=1`.
+- This exposed a new non-crashing wrong-output repro on the clang-built full SM90 FA3 binary:
+  - Build:
+    - `bazel build --config remote --jobs=1000 //:fa3_sm90_full_repro`
+  - BuildBuddy invocation:
+    - `d8716b41-32ab-4fdf-afdf-811afe92e54b`
+  - Small paged-KV config with heuristic splits:
+    - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=16 --num_splits=0`
+    - Result: no crash, but output is deterministically all zeros and fails the CPU reference.
+    - Compare summary:
+      - `max_abs=0.250000`
+      - `max_rel=1.000000`
+      - `mean_abs=0.025934`
+      - sample: all zeros
+  - Larger exact llama-like paged-KV config with heuristic splits:
+    - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=2048 --seqlen_k=2048 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=1024 --num_splits=0 --skip_ref=1`
+    - Result: no crash, but sample output is also all zeros.
+- The same geometry with explicit `--num_splits=1` still crashes:
+  - `FA3_REPRO_DEBUG=1 ... --seqlen_q=64 --seqlen_k=64 --paged_kv=1 --page_size=16 --num_splits=1 --skip_ref=1`
+  - Result: `CUDA error: unspecified launch failure`
+- The debug logs show:
+  - `--num_splits=1`:
+    - `paged_kv=1 pagedkv_tma=0 num_splits=1 use_dynamic_split=0 scheduler_needs_semaphore=1 pack_gqa=1`
+  - `--num_splits=0` on the same small case:
+    - `paged_kv=1 pagedkv_tma=0 num_splits=1 use_dynamic_split=1 scheduler_needs_semaphore=1 pack_gqa=1`
+  - `--num_splits=0` on the exact `2048 x 32 x 128` / `2048 x 8 x 128` case:
+    - `paged_kv=1 pagedkv_tma=1 num_splits=1 use_dynamic_split=1 scheduler_needs_semaphore=1 pack_gqa=1`
+- Current interpretation:
+  - The failing behavior is strongly tied to the paged-KV varlen scheduler mode selection.
+  - Static scheduler path (`use_dynamic_split=0`) crashes.
+  - Dynamic-split scheduler path (`use_dynamic_split=1`) survives but produces all-zero outputs.
+  - This is much closer to the user's real llama symptom than the earlier "always crashes" conclusion.
+- Additional note from the debug print:
+  - `capi/capi_sm90.cc` reports `total_k=batch_size * getDim(k, 1)` even for paged KV, so for `seqlen_k=64,page_size=16` it prints `total_k=16`, and for `seqlen_k=2048,page_size=1024` it prints `total_k=1024`.
+  - This may or may not be causal for forward correctness, but it is inconsistent with the logical KV length and should be audited.
+- Follow-up audit:
+  - Patched `capi/capi_sm90.cc` so paged-KV reports logical `total_k = batch_size_k * seqlen_k`.
+  - Rebuilt `//:fa3_sm90_full_repro` with invocation:
+    - `0b94dd11-9902-47fd-a24e-eb09320df3e9`
+  - Reran the same two FA3 dynamic-split repros.
+  - Result:
+    - debug print now shows correct `total_k` (`64` and `2048`)
+    - behavior is unchanged
+    - small paged-KV case still returns deterministic all-zero outputs and fails reference
+    - exact llama-like paged-KV case still returns all-zero sampled outputs
+  - Conclusion:
+    - the incorrect paged-KV `total_k` accounting was a real wrapper bug, but it is not sufficient to explain the observed clang FA3 wrong-output path.
+- FA2 control status:
+  - Tried building `//:fa2_llama_repro`, but the reduced FA2 target currently fails to link because it depends on the full `:capi` dispatcher, which references many FA2 kernels not present in the reduced FA2 library.
+  - This is a separate build-system issue in the control target, not yet a runtime result.
+
+## 2026-04-02 Scheduler / PDL Narrowing
+
+- Added scheduler buffer dumps in `tests/fa3_sm90_repro.cc` under `FA3_REPRO_DEBUG=1`.
+- Added a temporary escape hatch in `capi/capi_sm90.cc`:
+  - `FA3_REPRO_SKIP_SCHED_PREP=1`
+  - This sets `params.skip_scheduler_metadata_computation = true`
+  - The harness then preloads `scheduler_metadata` with `[0, 1, ...]` so the main kernel sees:
+    - semaphore = `0`
+    - `num_splits_dynamic = 1`
+- Small paged-KV dynamic-split repro with scheduler prep enabled:
+  - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=16 --num_splits=0 --dump_count=8`
+  - Observed debug line:
+    - `paged_kv=1 pagedkv_tma=0 num_splits=1 use_dynamic_split=1 scheduler_needs_semaphore=1 pack_gqa=1 skip_sched_meta=0 total_k=64`
+  - Scheduler dump after each iteration:
+    - `sched 0 1`
+    - `sched 0 1`
+    - `sched 0 1`
+  - Result:
+    - no crash
+    - output remains deterministically all zeros
+    - semaphore never advances beyond `0`
+- Main-kernel PDL experiment:
+  - Patched `hopper/flash_fwd_launch_template.h` so the main `cutlass::kernel_launch<AttnKernel>(...)` uses `launch_with_pdl=false`
+  - Result:
+    - the same small dynamic-split paged-KV repro now crashes with `CUDA error: unspecified launch failure`
+    - the exact llama-like paged-KV case (`2048 x 32 x 128`, `2048 x 8 x 128`, `page_size=1024`, `num_splits=0`) also crashes
+  - Interpretation:
+    - PDL changes the symptom:
+      - main-kernel PDL on => wrong all-zero outputs
+      - main-kernel PDL off => launch failure
+- Scheduler-prep bypass experiment with main-kernel PDL restored:
+  - Restored the original main-kernel PDL expression.
+  - Kept prep-kernel PDL disabled:
+    - `prepare_varlen_num_blocks(..., false /*enable_pdl*/)`
+  - Built with invocation:
+    - `ab2ac4cb-0093-4d63-b537-071f34f11b0f`
+  - Ran:
+    - `FA3_REPRO_DEBUG=1 FA3_REPRO_SKIP_SCHED_PREP=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=16 --num_splits=0 --dump_count=8`
+  - Result:
+    - `CUDA error: unspecified launch failure`
+  - Interpretation:
+    - the failure is not only in `prepare_varlen_num_blocks`
+    - the crash survives when scheduler prep is bypassed and the scheduler buffer is host-seeded
+- Current best narrowing:
+  - The reproducible wrong-output surface is:
+    - FA3
+    - SM90
+    - clang-built binary
+    - varlen + paged-KV
+    - dynamic-split scheduler path
+  - The remaining likely root-cause area is the main persistent scheduler kernel path, especially its interaction with PDL under clang-generated Hopper code.
+
+## Immediate Next Step
+
+1. Add launch-level debug prints in `hopper/flash_fwd_launch_template.h`:
+   - `num_blocks_m`
+   - grid and block dims
+   - shared memory size
+   - `tile_count_semaphore` pointer
+   - `num_splits_dynamic_ptr` pointer
+   - whether the scheduler class is persistent
+2. Rebuild and rerun the small paged-KV dynamic-split repro with `FA3_REPRO_DEBUG=1`.
+3. Use that data to decide whether the main kernel is being launched with inconsistent scheduler metadata or whether the problem is already deeper in clang-generated device code.
+
+## 2026-04-02 Post-Launch Narrowing
+
+- Added launch-level debug prints in `hopper/flash_fwd_launch_template.h` under `FA3_REPRO_DEBUG=1`:
+  - `num_blocks_m`
+  - grid dims
+  - block dims
+  - dynamic shared memory size
+  - persistent vs single-tile scheduler choice
+  - `tile_count_semaphore`
+  - `num_splits_dynamic_ptr`
+  - `cu_seqlens_q`
+- Rebuilt `//:fa3_sm90_full_repro` with invocation:
+  - `2493cd24-39a5-410b-bd73-cd41a902bdb7`
+- Small paged-KV dynamic-split repro with launch debug:
+  - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=16 --num_splits=0 --dump_count=8`
+  - Observed launch:
+    - `persistent=1`
+    - `num_blocks_m=2`
+    - `grid=(132,1,1)`
+    - `block=(384,1,1)`
+    - valid non-null device pointers for `tile_sem`, `num_splits_dyn`, and `cu_q`
+  - Result:
+    - output still all zeros
+    - scheduler metadata still remains `sched 0 1`
+
+## 2026-04-03 Standalone GMMA Boundary Repro Draft
+
+- Added a new standalone Hopper WGMMA toy TU:
+  - `hopper/clang_gmma_boundary_repro.cu`
+- Added a matching build target:
+  - `//:clang-gmma-boundary-repro`
+- Intent:
+  - isolate a tiny `sm_90a` CuTe/CUTLASS kernel that wraps one WGMMA path in multiple explicit device helper calls
+  - keep the helper boundaries small enough to inspect directly in PTX/SASS
+  - use it as a candidate for reproducing the clang-side cross-function-boundary behavior without pulling in the full FA3 mainloop
+- Current source shape:
+  - uses shared-memory A/B tiles with `GMMA::Layout_K_SW128_Atom`
+  - uses `SM90_64x64x16_F16F16F16_SS`
+  - routes the work through `gmma_mainloop -> gmma_step -> gmma_wrapper -> gmma_leaf`
+  - second iteration mirrors more of the FA3 shape:
+    - nested lambdas inside `gmma_wrapper`
+    - a local `gmma(...)` helper modeled on `hopper/utils.h`
+    - `convert_layout_acc_Aregs(...)` plus `convert_type_out(...)` in the helper path
+  - kept self-contained instead of directly including `hopper/utils.h` because the local header include path from this target was unreliable
+- Build results:
+  - clang:
+    - `bazel build --jobs=8 --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 --repo_env=CUDA_CLANG_PATH=$HOME/.cache/llvm-toolchain/bin/clang --repo_env=CC=$HOME/.cache/llvm-toolchain/bin/clang --repo_env=CXX=$HOME/.cache/llvm-toolchain/bin/clang++ --@rules_cuda//cuda:compiler=clang //:clang-gmma-boundary-repro`
+    - BuildBuddy: `077940bc-d21c-475b-bb50-bd14f9efd50f`
+  - nvcc:
+    - `bazel build --jobs=8 --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 --repo_env=CC=/usr/bin/gcc --repo_env=CXX=/usr/bin/g++ --@rules_cuda//cuda:compiler=nvcc //:clang-gmma-boundary-repro`
+    - BuildBuddy: `b840443d-0433-4bc4-9ae2-776e85baf8ee`
+- Copied comparison artifacts:
+  - clang:
+    - `/tmp/gmma_repro_compare/clang.o`
+    - `/tmp/gmma_repro_compare/clang.pic.o`
+    - `.o == .pic.o`
+    - sha256: `c93233bbb181a76571b1e389119c30561007f3e733798d1732963dd56a30c880`
+  - nvcc:
+    - `/tmp/gmma_repro_compare/nvcc.o`
+    - `/tmp/gmma_repro_compare/nvcc.pic.o`
+    - `.o != .pic.o`
+- Initial inspection:
+  - clang PIC object:
+    - contains one cubin and one PTX image
+    - `REG:96 STACK:0 SHARED:1024 GLOBAL:0`
+  - nvcc PIC object:
+    - contains one cubin and no PTX image
+    - `REG:96 STACK:0 SHARED:1024 GLOBAL:12 CONSTANT[4]:96`
+  - dumped artifacts:
+    - `/tmp/gmma_repro_compare/dumps/clang.ptx`
+    - `/tmp/gmma_repro_compare/dumps/clang.sass`
+    - `/tmp/gmma_repro_compare/dumps/nvcc.sass`
+- Important result:
+  - this first standalone toy does **not** yet reproduce the pathological clang code shape from the FA3 TU
+  - no obvious `CALL`, `CALL.ABS`, `STL`, or `LDL` inflation shows up in the SASS dumps
+  - clang PTX does contain the expected `wgmma.mma_async` instructions, but not the bad out-of-line helper-call pattern seen in `flash_fwd_hdim128_bf16_paged_split_sm90.cu`
+- Second iteration comparison:
+  - clean clang snapshots:
+    - `/tmp/gmma_repro_compare_v2/clang.o`
+    - `/tmp/gmma_repro_compare_v2/clang.pic.o`
+    - `.o == .pic.o`
+    - sha256: `370237b9825a84dd510fe33039538df12312aeb2c77f9de2b7823b43c60a6783`
+  - clean nvcc snapshots:
+    - `/tmp/gmma_repro_compare_v2/nvcc.o`
+    - `/tmp/gmma_repro_compare_v2/nvcc.pic.o`
+    - `.o != .pic.o`
+    - sha256:
+      - non-PIC: `bb86e93b421a090138171fa51bca08f8426abbc14be7dc0da1bfd2f9cde1f366`
+      - PIC: `3805154bc6ba07e1ef9c73110e75c3529bd7da508a249c593d6d337a338bcb37`
+  - dumps:
+    - `/tmp/gmma_repro_compare_v2/dumps/clang.ptx`
+    - `/tmp/gmma_repro_compare_v2/dumps/clang.sass`
+    - `/tmp/gmma_repro_compare_v2/dumps/nvcc.sass`
+  - resource usage still stays small and matched:
+    - clang: `REG:96 STACK:0 SHARED:1024 GLOBAL:0`
+    - nvcc: `REG:96 STACK:0 SHARED:1024 GLOBAL:12 CONSTANT[4]:96`
+  - still no `CALL`, `CALL.ABS`, `STL`, or `LDL` inflation in either SASS dump
+  - still no `call.uni` in clang PTX
+- Conclusion:
+  - useful baseline, not yet the smoking-gun reproducer
+  - nested lambdas plus a local `flash::gemm`-style helper are still not enough by themselves
+  - next iteration should move closer to the actual FA3 mainloop structure, likely by partially mirroring `flash::CollectiveMainloopFwdSm90::mma(...)` state setup:
+    - pipeline state / barrier token flow
+    - `BlockMN_t::get_n_block_min_max(...)`
+    - the real `fwd_step` closure around both QK and PV paths
+
+## 2026-04-03 FA2 Single-TU Control
+
+- Added a single-TU FA2 comparison target:
+  - `//:flashattn-fa2-single-aquery`
+  - source: `csrc/flash_attn/src/flash_fwd_hdim64_bf16_sm80.cu`
+- Built clean snapshots with both compilers:
+  - clang:
+    - BuildBuddy: `192fac51-6019-41b9-8b47-ac735d2a19df`
+    - copied objects:
+      - `/tmp/fa2_single_compare/clang.o`
+      - `/tmp/fa2_single_compare/clang.pic.o`
+    - `.o == .pic.o`
+    - size: `2563176`
+    - sha256: `43532448fea8b72d2e4e8b5e7f292bce269b7c7ed3b4a8409a3ffbfc643c8870`
+  - nvcc:
+    - BuildBuddy: `cb64c5ea-303e-4999-a2b9-809dfdcde347`
+    - copied objects:
+      - `/tmp/fa2_single_compare/nvcc.o`
+      - `/tmp/fa2_single_compare/nvcc.pic.o`
+    - non-PIC size / sha256:
+      - `1543912`
+      - `f404a2544b287cd53176ebba70362100fdbd7149d8474c673cbdf14f38f72cff`
+    - PIC size / sha256:
+      - `1531400`
+      - `175f73eefcb913a8c17f1e92db035e1e0fb774e6baaee99ac09d410ebbc9804e`
+- Extracted cubins:
+  - `/tmp/fa2_single_compare/dumps/clang.pic.1.sm_90a.cubin`
+  - `/tmp/fa2_single_compare/dumps/nvcc.pic.1.sm_90a.cubin`
+- Key device-symbol result:
+  - the actual FA2 kernel entrypoint mangling matches between clang and nvcc
+  - both cubins export the same set of global `flash::flash_fwd_kernel<...>(flash::Flash_fwd_params)` entry symbols
+  - the difference is not “clang chose a different kernel entry name”
+- Secondary symbol differences:
+  - clang cubin is larger:
+    - `1827864` vs `1350672`
+  - clang carries extra weak device helper symbols with names like:
+    - `$_ZN5flash16flash_fwd_kernel...$_ZN5flash22compute_attn_1rowblock...`
+  - nvcc cubin does not carry those extra weak wrapper/helper symbols
+  - both sides still carry expected slowpath helpers like:
+    - `$__internal_N_$__cuda_sm20_rcp_rn_f32_slowpath`
+- Interpretation:
+  - for FA2, the device entrypoint mangling itself is not the issue
+  - clang still appears to emit more auxiliary device-symbol structure than nvcc, but on this known-good FA2 path the exported kernel entries line up
+- Small paged-KV dynamic-split repro with prep bypass:
+  - `FA3_REPRO_DEBUG=1 FA3_REPRO_SKIP_SCHED_PREP=1 ...`
+  - Launch geometry is the same as above
+  - Result:
+    - immediate `CUDA error: unspecified launch failure`
+- Small paged-KV explicit split repro:
+  - `FA3_REPRO_DEBUG=1 ... --num_splits=1 --skip_ref=1`
+  - Launch geometry is the same except `num_splits_dyn=(nil)`
+  - Result:
+    - immediate `CUDA error: unspecified launch failure`
+- Interpretation after launch-level instrumentation:
+  - the wrapper is passing coherent-looking scheduler pointers and launch geometry
+  - the bad behavior is not explained by obviously bad scheduler metadata at launch time
+
+## 2026-04-02 Persistent Scheduler Elimination
+
+- Forced varlen FA3 onto `SingleTileScheduler` in `hopper/flash_fwd_launch_template.h` to remove `VarlenDynamicPersistentTileScheduler` from the equation.
+- Rebuilt with invocation:
+  - `2ee10916-bd5e-42bd-836d-3d47512ec7fe`
+- Small paged-KV dynamic-split repro after forcing `SingleTileScheduler`:
+  - launch changes to:
+    - `persistent=0`
+    - `grid=(2,8,1)`
+  - Result:
+    - output is still deterministically all zeros
+    - scheduler metadata still shows `sched 0 1`
+- Small non-paged varlen repro with the same head geometry:
+  - `--batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0`
+  - Result:
+    - still deterministically all zeros
+- Small non-paged varlen repro without GQA:
+  - `--batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=32 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0`
+  - Result:
+    - still deterministically all zeros
+- Minimal wrong-output repro found:
+  - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=1 --num_heads_k=1 --head_dim=64 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0 --dump_count=8`
+  - Launch:
+    - `persistent=0`
+    - `grid=(1,1,1)`
+    - `block=(256,1,1)`
+  - Result:
+    - deterministic all-zero output
+    - fails CPU reference
+- Current best narrowing:
+  - The wrong-output bug no longer requires:
+    - paged KV
+    - GQA / PackGQA
+    - dynamic persistent scheduling
+  - The remaining minimal bad surface is:
+    - SM90 FA3
+    - clang build
+    - varlen forward path
+    - batch=1
+    - seqlen_q=64
+    - seqlen_k=64
+    - num_heads=1
+    - num_heads_k=1
+    - head_dim=64
+  - This points away from scheduler metadata and toward the varlen kernel specialization / mainloop path itself under clang.
+- Additional reduction:
+  - The same minimal repro still returns all zeros with `--causal=0`.
+  - So causality is not required.
+- Critical split on the minimal repro:
+  - `--num_splits=0`:
+    - `use_dynamic_split=1`
+    - `num_splits_dyn` is non-null
+    - launch stays `persistent=0`, `grid=(1,1,1)`, `block=(256,1,1)`
+    - result: deterministic all-zero output
+  - `--num_splits=1`:
+    - `use_dynamic_split=0`
+    - `num_splits_dyn=(nil)`
+    - launch still stays `persistent=0`, `grid=(1,1,1)`, `block=(256,1,1)`
+    - result: `CUDA error: unspecified launch failure`
+- Current interpretation:
+  - On the reduced `SingleTileScheduler` repro, the zeros-vs-crash difference survives even after removing paged KV, GQA, and the persistent scheduler.
+  - The remaining material runtime difference is the main-kernel PDL launch condition:
+    - `launch_with_pdl=true` when varlen + `num_splits_dynamic_ptr` is present
+    - `launch_with_pdl=false` when it is absent
+  - That makes the strongest current root-cause hypothesis:
+    - clang-generated SM90 FA3 varlen kernel behavior around the main-kernel PDL path, not scheduler metadata layout.
+
+## 2026-04-02 Direct PDL Confirmation
+
+- Patched the reduced `SingleTileScheduler` build so the main FA3 kernel always launches with PDL when `Varlen=true`.
+- Rebuilt with invocation:
+  - `bbb2f49a-b0f9-4666-999e-8a9d8e33c11d`
+- Reran the minimal explicit-split case:
+  - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=1 --num_heads_k=1 --head_dim=64 --causal=0 --varlen=1 --paged_kv=0 --num_splits=1 --skip_ref=1 --dump_count=8`
+  - Before this patch:
+    - same config crashed with `CUDA error: unspecified launch failure`
+  - After forcing main-kernel PDL on:
+    - no crash
+    - output becomes deterministic all zeros
+    - scheduler dump is `sched 0 0`
+    - sample output remains all zeros
+- Conclusion:
+  - The crash-vs-zeros split is directly controlled by the main-kernel PDL launch path on the reduced varlen repro.
+  - Since this repro already removed paged KV, GQA, and the persistent scheduler, the strongest current root-cause statement is:
+    - clang-built SM90 FA3 varlen kernels are broken around the main-kernel PDL path
+    - `launch_with_pdl=false` manifests as launch failure
+    - `launch_with_pdl=true` manifests as silent all-zero output
+
+## 2026-04-02 GDC Wait Isolation
+
+- Restored the original host-side PDL condition in `hopper/flash_fwd_launch_template.h`.
+- Disabled only the unconditional `cutlass::arch::wait_on_dependent_grids()` in `hopper/flash_fwd_kernel_sm90.h` for the reduced repro build.
+- Rebuilt with invocation:
+  - `0757ba25-3b49-40a5-b074-cfefce382240`
+- Minimal explicit-split case after removing `griddepcontrol.wait`:
+  - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=1 --num_heads_k=1 --head_dim=64 --causal=0 --varlen=1 --paged_kv=0 --num_splits=1 --skip_ref=1 --dump_count=8`
+  - Result:
+    - still `CUDA error: unspecified launch failure`
+- Minimal heuristic-split case after removing `griddepcontrol.wait`:
+  - same config but `--num_splits=0`
+  - Result:
+    - still deterministic all-zero output
+    - scheduler dump still `sched 0 1`
+- Conclusion:
+  - `griddepcontrol.wait` alone is not sufficient to explain either symptom.
+  - The remaining highest-value compiler/runtime boundary is the broader SM90 GDC/PDL enablement path itself, not just the single wait instruction.
+
+## 2026-04-02 Return To Real Path
+
+- Removed the reduction-only hacks and restored the real SM90 FA3 path:
+  - restored normal `UsePersistentScheduler` selection in `hopper/flash_fwd_launch_template.h`
+  - restored `cutlass::arch::wait_on_dependent_grids()` in `hopper/flash_fwd_kernel_sm90.h`
+  - restored `CUTLASS_ENABLE_GDC_FOR_SM90` in `BUILD.bazel`
+  - removed the temporary `FA3_REPRO_SKIP_SCHED_PREP` bypass path from `capi/capi_sm90.cc` and `tests/fa3_sm90_repro.cc`
+- Rebuilt the real path with invocation:
+  - `64f1d6c1-9001-4dcd-9625-2d5ed7baae1a`
+- Exact llama-like non-crashing FA3 surface, non-paged:
+  - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=2048 --seqlen_k=2048 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0 --skip_ref=1 --dump_count=16`
+  - Result:
+    - no crash
+    - launch uses the real path again:
+      - `persistent=1`
+      - `pack_gqa=1`
+      - `use_dynamic_split=1`
+    - sampled output is all zeros
+    - scheduler metadata remains `sched 0 1`
+- Exact llama-like non-crashing FA3 surface, paged KV:
+  - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=2048 --seqlen_k=2048 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=1024 --num_splits=0 --skip_ref=1 --dump_count=16`
+  - Result:
+    - no crash
+    - sampled output is all zeros
+    - scheduler metadata remains `sched 0 1`
+- Smaller real-path reference-enabled repros:
+  - non-paged:
+    - `--batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0`
+  - paged:
+    - `--batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=1 --page_size=16 --num_splits=0`
+  - Result for both:
+    - deterministic all-zero output
+    - same reference failure:
+      - `max_abs=0.250000`
+      - `max_rel=1.000000`
+      - `mean_abs=0.025934`
+- Current practical conclusion:
+  - The real llama-like FA3 forward path is now reproduced again, not just the trimmed kernel path.
+  - The non-crashing `num_splits=0` varlen path still produces deterministic zeros on both paged and non-paged inputs.
+  - We can now continue wrong-output analysis on the real path instead of the trimmed one.
+
+## 2026-04-02 FA2 Control And Crafted Inputs
+
+- Narrowed `FA2_ARCHS` in `BUILD.bazel` to `["sm_90a"]` so the FA2 control path only builds the H100 target we are actually using.
+- Rebuilt with invocation:
+  - `545c5011-cf7c-4383-ad2c-4d3e0375ffa8`
+- FA2 real-path non-paged control:
+  - `LD_LIBRARY_PATH=... ./bazel-bin/fa2_control_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0 --dump_count=8`
+  - Result:
+    - `PASS`
+    - `max_abs=0.000719`
+    - `max_rel=0.003534`
+    - `mean_abs=0.000045`
+    - sample output is nonzero
+- FA2 real-path paged control:
+  - same config but `--paged_kv=1 --page_size=16`
+  - Result:
+    - process exits with code `-1` and no stdout/stderr
+  - Status:
+    - not investigated yet because the non-paged FA2 control already proves the harness and real varlen path can be correct on this machine
+- Added deterministic harness input modes in `tests/fa3_sm90_repro.cc`:
+  - `uniform_const_v`
+  - `uniform_ramp_v`
+  - `single_key_copy`
+- `uniform_const_v` is the cleanest correctness probe so far:
+  - FA3:
+    - `./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0 --input_mode=uniform_const_v --dump_count=8`
+    - Result:
+      - `FAIL`
+      - `max_abs=0.125000`
+      - `max_rel=1.000000`
+      - `mean_abs=0.125000`
+      - sample output is all zeros
+  - FA2:
+    - same config with `./bazel-bin/fa2_control_repro`
+    - Result:
+      - `PASS`
+      - exact constant output `0.125000` in the sample
+- `uniform_ramp_v` is also a good structured probe:
+  - FA3:
+    - returns all zeros and fails reference
+  - FA2:
+    - passes reference with nonzero ramp/prefix-mean output
+    - sample begins `0.050049 0.051025 0.052002 0.052979 0.053955 0.054932 0.055908 0.056885`
+- `single_key_copy` was not useful as initially framed:
+  - both FA2 and FA3 returned zeros against the current CPU reference for `seqlen_k=1`, so the assumption behind that test needs to be revisited before using it as evidence
+- Current practical conclusion:
+  - We now have a clean A/B on the real non-paged path:
+    - FA2 is correct
+    - FA3 deterministically zeros outputs
+  - The best crafted correctness inputs so far are:
+    - `uniform_const_v` for an exact constant-output oracle
+    - `uniform_ramp_v` for a structured nontrivial oracle
+
+## 2026-04-02 Untouched Buffer Check
+
+- Added `FA3_REPRO_DEBUG`-guarded sentinel initialization and dumps for:
+  - `out`
+  - `softmax_lse`
+- Rebuilt with invocation:
+  - `b2c44bcd-7273-46af-90ea-d2f33c0210ae`
+- Real-path non-paged exact oracle:
+  - `FA3_REPRO_DEBUG=1 LD_LIBRARY_PATH=... ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0 --input_mode=uniform_const_v --dump_count=8`
+  - Sentinels:
+    - `out = -0.5`
+    - `softmax_lse = -123`
+  - Result:
+    - `sched 0 1`
+    - sampled `out` remains `-0.5`
+    - sampled `softmax_lse` remains `-123`
+  - Conclusion:
+    - clang-built FA3 is not computing zero and storing it on this path
+    - it is leaving both output and LSE buffers untouched
+- Removed GQA / `pack_gqa` as a cause:
+  - same oracle but `--num_heads=32 --num_heads_k=32`
+  - `pack_gqa=0`
+  - result is still untouched sentinels in both `out` and `softmax_lse`
+- Dense nearby case changes symptom instead of fixing correctness:
+  - same oracle but `--varlen=0 --num_heads=32 --num_heads_k=8`
+  - result:
+    - `CUDA error: unspecified launch failure`
+- Smaller varlen non-GQA case also reproduces untouched outputs:
+  - `--num_heads=1 --num_heads_k=1 --varlen=1`
+  - result:
+    - `sched 0 1`
+    - `out` and `softmax_lse` both remain at their sentinels
+- Current practical conclusion:
+  - The clang FA3 divergence is now narrower than “wrong math.”
+  - On the real non-paged varlen `num_splits=0` path, the kernel launch sequence completes without runtime error but never writes `out` or `softmax_lse`.
+  - This is not caused by GQA packing.
+  - The nearest dense path still crashes, so the likely boundary remains the SM90 FA3 varlen launch / execution path under clang.
+
+## 2026-04-02 Hermetic NVCC Build-Path Attempt
+
+- Goal:
+  - create a reversible `nvcc` A/B path for `//:fa3_sm90_full_repro` without relying on `/usr/local/cuda`
+- Checkpoint before the experiment:
+  - `58a633f` `Checkpoint before nvcc build-path experiment`
+- Switched this branch from the LLVM `cuda_library` macro to `rules_cuda`:
+  - `BUILD.bazel` now loads `@rules_cuda//cuda:defs.bzl`
+  - `MODULE.bazel` now uses a hermetic `cuda.redist_json(version = "13.0.2")` plus `cuda.toolkit(name = "cuda")`
+  - remapped CUDA labels from the old `@cuda//cuda:*` layout to the `rules_cuda` root-repo layout
+  - routed around the broken aggregate `@cuda//:cuda_headers` target by depending on specific components:
+    - `cudart_headers`
+    - `nvcc_headers`
+    - `nvvm_headers`
+    - `cccl_headers`
+    - `crt_headers`
+- Useful build results:
+  - `a4d3117d-466b-4347-bc70-33f54bbdb7aa`
+    - first `rules_cuda` load failed inside `cuda_library.bzl`
+  - `f06605b7-0cbb-4051-bac3-b19be30041cb`
+    - hermetic repo shape fixed enough to analyze, then failed on broken aggregate `@cuda//:cuda_headers`
+  - `5c90d374-fca0-447e-97d0-403521161e38`
+    - got into real compilation, then host compile failed until `crt_headers` were added
+  - `c1ac02cd-3ee6-4f48-8dd4-686b5a75d442`
+    - `bazel` server hit native-thread OOM under `--jobs=1000`
+  - `16b05a30-3167-437c-8abe-9617752e42b4`
+    - reran in `--batch` mode with the same `--jobs=1000`
+    - reached real `nvcc` compilation
+    - failed with the first actual nvcc/compiler-boundary error
+- Current nvcc blocker:
+  - `nvcc` is using the registered LLVM host toolchain
+  - failure from `host_config.h`:
+    - unsupported clang version (`clang` must be `< 21`)
+    - `libc++ is not supported on x86 system`
+- Current practical conclusion:
+  - hermetic `rules_cuda` is viable enough to reach actual `nvcc` compilation on this branch
+  - the remaining issue is not CUDA package discovery
+  - the remaining issue is host-toolchain selection: `nvcc` is picking the LLVM/clang/libc++ toolchain instead of a GCC/libstdc++ host compiler
+
+## 2026-04-02 System Clang Host-Compiler Attempt
+
+- Installed system `clang` from `apt` as suggested.
+- Disabled `register_toolchains("@llvm//toolchain:all")` in `MODULE.bazel` so the nvcc path would stop picking the LLVM toolchain.
+- Rebuilt with:
+  - `bazel --batch build --config remote --jobs=1000 //:fa3_sm90_full_repro`
+  - invocation `fe75461a-04b2-4dbe-9f71-797dd670e5ef`
+- Result:
+  - analysis now fails immediately with:
+    - `No matching toolchains found for @@bazel_tools//tools/cpp:toolchain_type`
+- Conclusion:
+  - disabling `@llvm` registration removed the only visible Bazel C++ toolchain on this branch
+  - installing system `clang` is not enough by itself; Bazel still needs an explicitly registered non-LLVM C++ toolchain so nvcc can use it as the host compiler
+
+## 2026-04-02 NVCC A/B Confirmation
+
+- For the `rules_cuda`/nvcc path, remote execution is not usable because the detected host compiler path is local to this machine.
+- The working local build invocation is:
+  - `bazel --batch build --jobs=1000 --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 --repo_env=BAZEL_NO_APPLE_CPP_TOOLCHAIN=0 --repo_env=BAZEL_DO_NOT_DETECT_SWIFT_TOOLCHAIN=0 --repo_env=CC=/usr/bin/clang-18 --repo_env=CXX=/usr/bin/clang++-18 //:fa3_sm90_full_repro`
+- Installed host toolchain packages for the local nvcc build:
+  - `clang-18`
+  - `g++-10`
+- Exact real-path oracle run under the locally built nvcc binary:
+  - `FA3_REPRO_DEBUG=1 ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0 --input_mode=uniform_const_v --dump_count=8`
+- Result under nvcc:
+  - `PASS`
+  - `compare max_abs=0.000000`
+  - sample output is exact `0.125000`
+  - `lse_sample` is sane and non-sentinel:
+    - `0.000000 0.693147 1.098612 1.386294 1.609438 1.791759 1.945910 2.079442`
+  - scheduler becomes `sched 16 1`
+- Compare that to the clang-built result on the same oracle:
+  - output buffer remained untouched at the sentinel value
+  - `softmax_lse` remained untouched at the sentinel value
+  - scheduler was only `sched 0 1`
+- Current practical conclusion:
+  - We now have direct A/B proof on the same machine and same real FA3 call surface:
+    - nvcc build: correct
+    - clang build: broken
+  - The failure is not in the harness or in the mathematical setup of the repro input.
+  - The remaining root-cause surface is specifically the clang-built SM90 FA3 varlen execution path.
+
+## 2026-04-02 rules_cuda Clang A/B
+
+- Goal:
+  - check whether a `rules_cuda` clang build reproduces the earlier broken LLVM-toolchain behavior, or whether it behaves like the working `rules_cuda` nvcc build
+- Installed clang toolchains:
+  - `clang-18` from `apt`
+  - musl LLVM 22 toolchain at `/root/toolchains/llvm-22.1.0-musl`
+- Practical issue with the musl LLVM 22 archive:
+  - its `bin/clang` and `bin/clang++` entries are symlinks to `bin/llvm`
+  - Bazel invoking them directly was effectively running the generic `llvm` driver
+- Added wrapper scripts so `rules_cuda` can force the correct argv0:
+  - `tools/clang22-wrapper`
+  - `tools/clang22xx-wrapper`
+- Working local build invocation:
+  - `bazel --batch build --jobs=1000 --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 --repo_env=BAZEL_NO_APPLE_CPP_TOOLCHAIN=0 --repo_env=BAZEL_DO_NOT_DETECT_SWIFT_TOOLCHAIN=0 --repo_env=CC=/root/flash-attention/tools/clang22-wrapper --repo_env=CXX=/root/flash-attention/tools/clang22xx-wrapper --repo_env=CUDA_CLANG_PATH=/root/flash-attention/tools/clang22-wrapper --@rules_cuda//cuda:compiler=clang //:fa3_sm90_full_repro`
+- Exact oracle run under the `rules_cuda` clang build:
+  - `FA3_REPRO_DEBUG=1 ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=64 --seqlen_k=64 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0 --input_mode=uniform_const_v --dump_count=8`
+- Result:
+  - `PASS`
+  - `compare max_abs=0.000000`
+  - output sample is exact `0.125000`
+  - `lse_sample` is sane:
+    - `0.000000 0.693147 1.098612 1.386294 1.609438 1.791759 1.945910 2.079442`
+  - scheduler becomes `sched 16 1`
+- Llama-like shape sanity check under the same build:
+  - `FA3_REPRO_DEBUG=1 ./bazel-bin/fa3_sm90_full_repro --batch=1 --seqlen_q=2048 --seqlen_k=2048 --num_heads=32 --num_heads_k=8 --head_dim=128 --causal=1 --varlen=1 --paged_kv=0 --num_splits=0 --input_mode=uniform_const_v --dump_count=8 --skip_ref=1 --iters=1`
+  - result:
+    - `PASS`
+    - sample output is exact `0.125000`
+    - `lse_sample` remains sane
+    - scheduler becomes `sched 512 1`
+- Current practical conclusion:
+  - `rules_cuda + clang` does **not** reproduce the earlier broken LLVM-toolchain behavior on this real FA3 path
+  - for this repro, `rules_cuda + clang` behaves like the working `rules_cuda + nvcc` build, not like the original broken clang path
+  - that makes `rules_cuda` a viable compiler path for continued repro work on this machine
+
+## 2026-04-02 rules_cuda Clang CUDA Invocation
+
+- Repro build command:
+  - `bazel --batch build --jobs=1000 --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 --repo_env=BAZEL_NO_APPLE_CPP_TOOLCHAIN=0 --repo_env=BAZEL_DO_NOT_DETECT_SWIFT_TOOLCHAIN=0 --repo_env=CC=/root/flash-attention/tools/clang22-wrapper --repo_env=CXX=/root/flash-attention/tools/clang22xx-wrapper --repo_env=CUDA_CLANG_PATH=/root/flash-attention/tools/clang22-wrapper --@rules_cuda//cuda:compiler=clang //:fa3_sm90_full_repro`
+- Wrapper scripts:
+  - `tools/clang22-wrapper`
+    - `#!/bin/bash`
+    - `exec -a clang /root/toolchains/llvm-22.1.0-musl/bin/llvm "$@"`
+  - `tools/clang22xx-wrapper`
+    - `#!/bin/bash`
+    - `exec -a clang++ /root/toolchains/llvm-22.1.0-musl/bin/llvm "$@"`
+- Example CUDA compile action from `bazel aquery` for `hopper/instantiations/flash_fwd_hdim128_bf16_sm90.cu`:
+  - `/root/flash-attention/tools/clang22-wrapper -x cu --cuda-gpu-arch=sm_90a --cuda-path=external/rules_cuda++toolchain+cuda_nvvm_v13.0.88/nvvm --no-offload-new-driver -frandom-seed=bazel-out/k8-opt/bin/_objs/flashattn-sm90/flash_fwd_hdim128_bf16_sm90.o -DFLASHATTENTION_DISABLE_BACKWARD -DFLASHATTENTION_DISABLE_DROPOUT -DFLASHATTENTION_DISABLE_SOFTCAP -DFLASHATTENTION_VARLEN_ONLY -DFLASHATTENTION_DISABLE_SM8x -DFLASHATTENTION_DISABLE_APPENDKV -DFLASHATTENTION_DISABLE_CLUSTER -DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED -DCUTLASS_ENABLE_GDC_FOR_SM90 -Iexternal/rules_cuda++toolchain+cuda_cudart_v13.0.96/cudart/include -Iexternal/rules_cuda++toolchain+cuda_nvcc_v13.0.88/nvcc/include -Iexternal/rules_cuda++toolchain+cuda_nvvm_v13.0.88/nvvm/include -Iexternal/rules_cuda++toolchain+cuda_cccl_v13.0.85/cccl/include -Iexternal/rules_cuda++toolchain+cuda_crt_v13.0.88/crt/include -Iexternal/+http_archive+cccl/libcudacxx/include -Iexternal/rules_cuda++toolchain+cuda_curand_v10.4.0.35/curand/include -Icsrc -Icsrc/cutlass/include -Icsrc/flash_attn/src -O2 -DNDEBUG -fPIC -c hopper/instantiations/flash_fwd_hdim128_bf16_sm90.cu -o bazel-out/k8-opt/bin/_objs/flashattn-sm90/flash_fwd_hdim128_bf16_sm90.o`
+- Action environment:
+  - `PATH=/root/flash-attention/tools:external/rules_cuda++toolchain+cuda_nvvm_v13.0.88/nvvm/nvvm/bin:external/rules_cuda++toolchain+cuda_nvcc_v13.0.88/nvcc/bin:/bin:/usr/bin:/usr/local/bin`
+
+## 2026-04-03 Bootstrap Script
+
+- Added `bootstrap.sh` at the repo root to make the current `rules_cuda` + clang setup reproducible on a fresh machine.
+- The script now:
+  - installs `curl`, `zstd`, `g++-12`, and `libstdc++-12-dev`
+  - downloads the bootstrapped LLVM archive into `$HOME/.cache`
+  - extracts it under `$HOME/.cache/llvm-toolchain`
+  - replaces `bin/clang` and `bin/clang++` symlinks with hardlinks inside that install so clang resolves its resource dir correctly
+  - initializes `csrc/cutlass` and `csrc/composable_kernel`
+- Updated `AGENTS.md` to point future work on this branch at `./bootstrap.sh` and to document the Bazel arguments for the local `rules_cuda` + clang build.
+
+## 2026-04-03 Llama-Focused rules_cuda Flag Comparison
+
+- Added two analysis-only targets in `BUILD.bazel`:
+  - `//:flashattn-sm90-llama-aquery`
+  - `//:capi-sm90-llama-aquery`
+- Purpose:
+  - keep the full `flashattn-sm90` / `capi-sm90` define surface
+  - reduce the CUDA source set to the smallest llama-like FA3 forward subset
+  - current CUDA `srcs` are:
+    - `hopper/flash_prepare_scheduler.cu`
+    - `hopper/flash_fwd_combine.cu`
+    - `hopper/instantiations/flash_fwd_hdim128_bf16_sm90.cu`
+    - `hopper/instantiations/flash_fwd_hdim128_bf16_packgqa_sm90.cu`
+    - `hopper/instantiations/flash_fwd_hdim128_bf16_paged_sm90.cu`
+    - `hopper/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.cu`
+- `bazel aquery` now works cleanly on the reduced target for both compiler modes:
+  - clang:
+    - `bazel aquery --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 --repo_env=CUDA_CLANG_PATH=$HOME/.cache/llvm-toolchain/bin/clang --repo_env=CC=$HOME/.cache/llvm-toolchain/bin/clang --repo_env=CXX=$HOME/.cache/llvm-toolchain/bin/clang++ --@rules_cuda//cuda:compiler=clang 'mnemonic("CudaCompile", deps(//:flashattn-sm90-llama-aquery))'`
+  - nvcc:
+    - `bazel aquery --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 'mnemonic("CudaCompile", deps(//:flashattn-sm90-llama-aquery))'`
+- Representative device compile action compared on:
+  - `hopper/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.cu`
+- First obvious clang vs nvcc differences from `aquery`:
+  - clang front-end:
+    - executable is `$HOME/.cache/llvm-toolchain/bin/clang`
+    - uses `--cuda-gpu-arch=sm_90a`
+    - uses `--cuda-path=external/rules_cuda++toolchain+cuda_nvvm_v13.0.88/nvvm`
+    - uses `--no-offload-new-driver`
+    - passes host-style warning / hardening flags directly to clang
+    - does **not** add nvcc-only CUDA convenience flags such as `--expt-relaxed-constexpr`, `--extended-lambda`, or `--dopt on`
+  - nvcc front-end:
+    - executable is `external/rules_cuda++toolchain+cuda_nvcc_v13.0.88/nvcc/bin/nvcc`
+    - uses `-gencode arch=compute_90a,code=sm_90a`
+    - forces `-ccbin /usr/bin/gcc`
+    - adds `--dopt on`
+    - adds `--expt-relaxed-constexpr`
+    - adds `--extended-lambda`
+    - forwards most host flags via repeated `-Xcompiler ...`
+- Host `capi_sm90.cc` compile comparison is much less interesting:
+  - same include / define surface on both sides
+  - main difference is clang host compile vs `/usr/bin/gcc` host compile
+  - no obvious FA3-specific delta beyond the host compiler itself
+- Tried the user's suggested `bazel build -s --sandbox_debug --jobs=1 --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 //:flashattn-sm90-llama-aquery` flow for nvcc:
+  - log captured at `/tmp/nvcc_llama_build_s.log`
+  - this successfully shows exact subcommands plus preserved sandbox shell entry points
+  - example preserved sandbox shell:
+    - `/tmp/bazel/_bazel_shadeform/0399586b74595f2f241f691534d24f6b/sandbox/linux-sandbox/<N>/execroot/_main`
+  - that path should be the cleanest place to replay one extracted nvcc subcommand with `-v`
+- Current practical next step:
+  - replay the preserved nvcc subcommand for `flash_fwd_hdim128_bf16_paged_split_sm90.cu` from its sandbox with `-v`
+  - compare `cudafe++`, `cicc`, `ptxas`, and fatbin options against the clang-produced device pipeline
+- Constraint for the next round:
+  - do not assume a system CUDA install
+  - use only the Bazel `rules_cuda` toolchain payloads and the exact extracted clang / nvcc command lines
+- Next comparison plan:
+  - work on a single TU, starting with `hopper/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.cu`
+  - replay the exact clang and nvcc compile lines manually
+  - save intermediates where possible:
+    - preprocessed source
+    - PTX or device-only output
+    - `ptxas` / backend verbose output
+    - final cubin / object metadata
+  - compare:
+    - front-end flags
+    - PTX shape
+    - backend resource usage
+    - final SASS / fatbin contents
+
+## 2026-04-03 Single-TU Bazel Artifact Comparison
+
+- Continued with the reduced target and compared the actual Bazel-produced object for:
+  - `hopper/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.cu`
+- Important correction:
+  - the preserved sandbox object path is just a symlink back into shared `bazel-out`
+  - to keep distinct artifacts, it is necessary to copy the object after one compiler build and then rebuild with the other compiler
+- Manual replay status:
+  - hand-replayed clang / nvcc commands were not faithful enough to the Bazel environment for this TU
+  - manual replay hit explicit-instantiation / namespace issues for this file, while Bazel-built artifacts were clean
+  - switched to comparing Bazel-built objects directly instead of trusting the manual replay
+- Build sequence that produced comparable artifacts:
+  - first built `//:flashattn-sm90-llama-aquery` with `rules_cuda` clang
+  - copied `flash_fwd_hdim128_bf16_paged_split_sm90.o` out of `bazel-out`
+  - rebuilt the same target with `rules_cuda` nvcc using `CC=/usr/bin/gcc` and `CXX=/usr/bin/g++`
+  - copied the refreshed `flash_fwd_hdim128_bf16_paged_split_sm90.o`
+- One pitfall found while rebuilding nvcc:
+  - if nvcc inherits the bootstrapped LLVM clang as host compiler, CUDA 13 rejects it from `host_config.h`
+  - pinning `CC=/usr/bin/gcc` and `CXX=/usr/bin/g++` restores the expected nvcc build path
+- Result for this TU:
+  - the two ELF object files are different at the byte level
+  - `readelf -S` output is identical between the clang and nvcc objects
+  - `nm -a | c++filt` output is identical between the clang and nvcc objects
+  - extracted `.nv_fatbin` blobs are byte-for-byte identical
+  - extracted `.nvFatBinSegment` content is also identical
+  - the differing byte range maps into `.shstrtab` only
+- Interpretation:
+  - for `flash_fwd_hdim128_bf16_paged_split_sm90.cu`, there is no meaningful device-code difference between the current `rules_cuda` clang and nvcc builds
+  - the produced fatbin for this TU matches exactly, so this file is not a lead for the FA3 correctness divergence
+- Best next step:
+  - repeat the same Bazel-artifact comparison on the next reduced TU, starting with:
+    - `hopper/instantiations/flash_fwd_hdim128_bf16_paged_sm90.cu`
+    - then `hopper/instantiations/flash_fwd_hdim128_bf16_packgqa_sm90.cu`
+  - if those also produce identical `.nv_fatbin`, move up one layer and compare the archive / final link inputs rather than individual TUs
+
+## 2026-04-03 Force-PIC Device-Code Divergence
+
+- The previous "identical fatbin" result applies only to the non-PIC `.o` path and is not the relevant artifact for the shared-library style build.
+- Re-ran the same reduced TU comparison with `--force_pic` for:
+  - `hopper/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.cu`
+- Exact comparison path:
+  - clang PIC object:
+    - `bazel-out/k8-opt/bin/_objs/flashattn-sm90-llama-aquery/flash_fwd_hdim128_bf16_paged_split_sm90.pic.o`
+  - nvcc PIC object:
+    - same path after clean rebuild with nvcc
+- Copied snapshots:
+  - `/tmp/fa3_forcepic/clang_paged_split.pic.o`
+  - `/tmp/fa3_forcepic/nvcc_paged_split.pic.o`
+- Object-level result:
+  - clang PIC object:
+    - size `2716776`
+    - sha256 `f42dfca5cf0bbbd327dd20c2ff79b563c10c7dac6f7b0091deb6198993a157b0`
+  - nvcc PIC object:
+    - size `1840096`
+    - sha256 `f6de1ef3858dd556c38957365694728f6cc57003b38761486cb49ef1618fdf3f`
+- Extracted fatbins differ materially:
+  - clang fatbin:
+    - `/tmp/fa3_forcepic/clang_paged_split.pic.fatbin`
+    - size `2558808`
+    - sha256 `6910f75733cbcc28d9aabf902270f5901561153174477b68c0b92ea2c986d445`
+  - nvcc fatbin:
+    - `/tmp/fa3_forcepic/nvcc_paged_split.pic.fatbin`
+    - size `1256800`
+    - sha256 `a3f8ed20abac4e96006b7aacbde65b55bdfc3ffcc7f673865acd18c33f9a056d`
+- Installed NVIDIA inspection tools on the machine:
+  - `cuda-cuobjdump-13-0`
+  - `cuda-nvdisasm-13-0`
+  - usable tools:
+    - `/usr/local/cuda-13.0/bin/cuobjdump`
+    - `/usr/local/cuda-13.0/bin/nvdisasm`
+- `cuobjdump` findings on the PIC artifacts:
+  - both objects contain one embedded `sm_90a` cubin
+  - clang PIC object also contains one embedded PTX image
+  - nvcc PIC object does not expose an embedded PTX image
+  - both cubins contain the same kernel entry set
+  - clang cubin `.text.*` sections are much larger than nvcc's for the same kernels
+- Resource-usage comparison from `cuobjdump --dump-resource-usage`:
+  - register counts are effectively the same between clang and nvcc for corresponding kernels
+  - shared memory is the same (`SHARED:1024`)
+  - the standout difference is stack size:
+    - nvcc kernels: `STACK:0` or `STACK:8`
+    - clang kernels: roughly `STACK:880` to `STACK:1424`
+- SASS-level comparison from `cuobjdump --dump-sass`:
+  - clang dump is much larger than nvcc's for the same TU
+  - clang shows many more calls:
+    - `CALL.ABS.NOINC`: 114
+    - `CALL.REL.NOINC`: 76
+  - nvcc only showed:
+    - `CALL.REL.NOINC`: 48
+  - clang also has 48 `RET` sites vs 12 for nvcc
+- Extra clang-only payloads observed:
+  - device-side diagnostic strings in `.nv.global.init`, including:
+    - `Trying to use tma without CUTE_ARCH_TMA_SM90_ENABLED.`
+    - `Trying to use tmast ... without CUTE_ARCH_MMA_SM90_ENABLED`
+  - references to `vprintf` in the clang fatbin / PTX payload
+- Checked the SM90a feature-macro theory directly:
+  - clang with `--cuda-device-only --cuda-gpu-arch=sm_90a` does define:
+    - `__CUDA_ARCH__ 900`
+    - `__CUDA_ARCH_FEAT_SM90_ALL 1`
+  - so the simple "clang forgot the sm90a feature macro" explanation is not supported
+- Strongest compiler-generated clue so far:
+  - clang non-PIC build logs show repeated `ptxas` warning `C7510` on these kernels:
+    - `Potential Performance Loss: wgmma.mma_async instructions are serialized due to wgmma pipeline crossing function boundary at a function call`
+  - this warning appears for the reduced FA3 kernels under clang and was not found in the nvcc logs already captured for the same workflow
+- Current interpretation:
+  - there is no evidence yet of a missing `sm90a` feature define or an RDC setting mismatch
+  - the highest-signal difference is that clang is leaving real function boundaries in the GMMA/WGMMA path
+  - that matches all of:
+    - much larger cubin `.text`
+    - huge device stack frames
+    - many more device calls
+    - explicit `ptxas` warning about WGMMA pipeline serialization across function boundaries
+- Best next step:
+  - isolate which helper calls remain out-of-line in clang for this TU
+  - diff the exact clang vs nvcc compile lines for the PIC action using `-s`
+  - try a direct clang replay of the TU with candidate codegen-affecting deltas only, then check whether the `C7510` warning and large `STACK` usage disappear
+
+## 2026-04-03 PIC vs Non-PIC Within Each Compiler
+
+- Switched the comparison axis from `clang vs nvcc` to `PIC vs non-PIC` within each compiler for the same TU:
+  - `hopper/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.cu`
+- Compared four copied artifacts:
+  - clang non-PIC:
+    - `/tmp/fa3_forcepic/clang_nonpic.o`
+    - size `1840672`
+    - sha256 `3a51cef658be5cc632a115d8b1104383604cc3a9c69ca13f5d9fb9a7682f4501`
+  - clang PIC:
+    - `/tmp/fa3_forcepic/clang_paged_split.pic.o`
+    - size `2739904`
+    - sha256 `abaa2e24d7fe2a36cb6a01c22d075a2c3696cb28315db4f3508f3680728cdd9f`
+  - nvcc non-PIC:
+    - `/tmp/fa3_forcepic/nvcc_nonpic.o`
+    - size `1840672`
+    - sha256 `3a51cef658be5cc632a115d8b1104383604cc3a9c69ca13f5d9fb9a7682f4501`
+  - nvcc PIC:
+    - `/tmp/fa3_forcepic/nvcc_paged_split.pic.o`
+    - size `1840096`
+    - sha256 `fa109c7e08664f4b7c68deda45f4870000e69a31f9ad92a5b219d75e59f81323`
+- Non-PIC result:
+  - clang non-PIC and nvcc non-PIC objects are identical for this TU
+  - extracted non-PIC fatbins are also identical:
+    - clang non-PIC fatbin sha256 `e3d195e527be771268187c8bca65ab718ffcf2963a9d4d35907bea308b0e1993`
+    - nvcc non-PIC fatbin sha256 `e3d195e527be771268187c8bca65ab718ffcf2963a9d4d35907bea308b0e1993`
+- nvcc PIC vs non-PIC result:
+  - nvcc object hash changes, but the extracted fatbin size stays the same (`1256800`)
+  - nvcc PIC fatbin hash differs from nvcc non-PIC fatbin:
+    - non-PIC `e3d195e527be771268187c8bca65ab718ffcf2963a9d4d35907bea308b0e1993`
+    - PIC `a3f8ed20abac4e96006b7aacbde65b55bdfc3ffcc7f673865acd18c33f9a056d`
+  - however, `cuobjdump --dump-resource-usage` is identical between nvcc PIC and non-PIC:
+    - same `REG`
+    - same `STACK`
+    - same `SHARED`
+    - same `CONSTANT`
+  - `cuobjdump --dump-elf` `.text._ZN7cutlass...` lines diff cleanly with no output
+  - neither nvcc object contains extractable PTX
+  - interpretation:
+    - for nvcc on this TU, `--force_pic` changes packaging / metadata, but not the device program shape seen in the cubin resource table or `.text` section sizes
+- clang PIC vs non-PIC result:
+  - clang non-PIC fatbin size is `1256800`, matching nvcc non-PIC
+  - clang PIC fatbin jumps to `2558808`
+  - clang PIC fatbin also adds embedded PTX, while clang non-PIC does not expose PTX
+  - `cuobjdump --dump-resource-usage` changes drastically under clang when `--force_pic` is enabled:
+    - non-PIC:
+      - `GLOBAL:12 CONSTANT[4]:96`
+      - kernel `STACK` values are `0` or `8`
+      - `REG`/`SHARED` match nvcc
+    - PIC:
+      - `GLOBAL:188 CONSTANT[4]:32`
+      - kernel `STACK` values jump to roughly `880` to `1424`
+      - `REG` remains roughly the same as non-PIC
+  - `cuobjdump --dump-elf` for clang PIC vs non-PIC shows a different section layout and different symbol naming:
+    - non-PIC uses `cutlass13device_kernel...`
+    - PIC uses `cutlassL13device_kernel...`
+  - interpretation:
+    - for clang on this TU, `--force_pic` is not a minor metadata change
+    - it changes the generated device program substantially
+- Current conclusion from the within-compiler comparison:
+  - nvcc:
+    - PIC vs non-PIC has no meaningful effect on device code shape for this TU
+  - clang:
+    - PIC vs non-PIC is the real trigger for the pathological device code shape
+    - the large `STACK`, extra calls, extra PTX, and larger fatbin all appear only on the clang PIC path
+
+## 2026-04-03 PTX-Suppression Flag Check
+
+- Tested whether clang's extra embedded PTX was the cause of the PIC-path divergence by adding:
+  - `--no-cuda-include-ptx=all`
+  - to the reduced target's `copts`
+- Rebuilt the same PIC target with clang and copied:
+  - `/tmp/fa3_forcepic/clang_paged_split.pic.noptxflag.o`
+- Result:
+  - the extracted fatbin is byte-for-byte identical to the previous clang PIC fatbin:
+    - `/tmp/fa3_forcepic/clang_pic_noptxflag.fatbin`
+    - sha256 `6910f75733cbcc28d9aabf902270f5901561153174477b68c0b92ea2c986d445`
+    - matches `/tmp/fa3_forcepic/clang_pic.fatbin`
+  - `cuobjdump --list-ptx` still reports embedded PTX
+  - `cuobjdump --dump-resource-usage` is unchanged:
+    - same large `STACK` values (`880` to `1424`)
+    - same `REG`
+    - same `GLOBAL:188`
+    - same `CONSTANT[4]:32`
+  - the build log still reports repeated `ptxas` `C7510` warnings about:
+    - `wgmma.mma_async instructions are serialized due to wgmma pipeline crossing function boundary`
+- Interpretation:
+  - passing `--no-cuda-include-ptx=all` through this Bazel `rules_cuda` clang path did not affect the produced device payload for this TU
+  - therefore, embedded PTX is not the cause of the bad PIC-path device code
+  - either:
+    - the option is ineffective / ignored in this compilation path, or
+    - the pathological cubin is being produced independently of whether PTX is also packaged
+- Updated working hypothesis:
+  - the relevant problem remains clang's PIC-path device codegen itself, especially out-of-line call boundaries in the WGMMA path
+
+## 2026-04-03 Clean Rerun Correction
+
+- Re-ran the reduced target from scratch and copied snapshots directly out of the same fresh Bazel builds:
+  - clang:
+    - `/tmp/clean_compare_clang.o`
+    - `/tmp/clean_compare_clang.pic.o`
+  - nvcc:
+    - `/tmp/clean_compare_nvcc.o`
+    - `/tmp/clean_compare_nvcc.pic.o`
+- Corrected results:
+  - clang `.o` and `.pic.o` are identical for this TU:
+    - size `2739904`
+    - sha256 `abaa2e24d7fe2a36cb6a01c22d075a2c3696cb28315db4f3508f3680728cdd9f`
+  - nvcc `.o` and `.pic.o` differ:
+    - non-PIC size `1840672`, sha256 `21554a541fdc1b81fe459fee503d38b4cdfe690caa39ec3433db11d68b9d8d03`
+    - PIC size `1840096`, sha256 `fa109c7e08664f4b7c68deda45f4870000e69a31f9ad92a5b219d75e59f81323`
+- Extracted fatbins from the clean rerun:
+  - clang non-PIC and PIC are identical:
+    - sha256 `6910f75733cbcc28d9aabf902270f5901561153174477b68c0b92ea2c986d445`
+  - nvcc non-PIC and PIC differ:
+    - non-PIC `e3d195e527be771268187c8bca65ab718ffcf2963a9d4d35907bea308b0e1993`
+    - PIC `a3f8ed20abac4e96006b7aacbde65b55bdfc3ffcc7f673865acd18c33f9a056d`
+- Corrected interpretation:
+  - the earlier theory that `-fPIC` is the trigger for the bad clang device code was wrong
+  - the robust signal is instead clang vs nvcc on the same TU:
+    - clang device payload differs substantially from nvcc even in the normal `.o`
+    - clang keeps huge stack frames and extra calls
+    - nvcc does not
+
+## 2026-04-03 Clang vs nvcc PIC Cubin / PTX Disassembly
+
+- Compared the clean copied PIC objects:
+  - clang: `/tmp/clean_compare_clang.pic.o`
+  - nvcc: `/tmp/clean_compare_nvcc.pic.o`
+- Extracted cubins:
+  - clang cubin:
+    - `/tmp/clang_nvcc_pic_analysis/clean_compare_clang.pic.1.sm_90a.cubin`
+    - size `2229968`
+  - nvcc cubin:
+    - `/tmp/clang_nvcc_pic_analysis/clean_compare_nvcc.pic.1.sm_90a.cubin`
+    - size `1256720`
+- `cuobjdump --dump-resource-usage`:
+  - clang:
+    - `GLOBAL:188 CONSTANT[4]:32`
+    - `STACK` roughly `880` to `1424`
+    - `REG` counts still close to nvcc (`168`, `254`, `255`)
+    - `SHARED:1024`
+  - nvcc:
+    - `GLOBAL:12 CONSTANT[4]:96`
+    - `STACK` `0` or `8`
+    - same `REG` ballpark
+    - `SHARED:1024`
+- `cuobjdump --dump-sass` global instruction counts:
+  - clang:
+    - `CALL`: `190`
+    - `CALL.ABS`: `114`
+    - `RET`: `48`
+    - `STL`: `12223`
+    - `LDL`: `4278`
+  - nvcc:
+    - `CALL`: `48`
+    - `CALL.ABS`: `0`
+    - `RET`: `12`
+    - `STL`: `9`
+    - `LDL`: `6`
+- The clang PTX already contains the problematic calls; this is not just a late `ptxas` artifact:
+  - `call.uni _ZZN5flash25CollectiveMainloopFwdSm90...3mma...`
+  - repeated many times across the TU
+  - these are exactly the kind of function boundaries that match the repeated clang-side `ptxas` `C7510` warnings:
+    - `wgmma.mma_async instructions are serialized due to wgmma pipeline crossing function boundary`
+- The extracted clang cubin symbol table also keeps extra callable helper functions:
+  - weak helper symbols named like:
+    - `$_ZN7cutlassL13device_kernel...$_ZZN5flash25CollectiveMainloopFwdSm90...3mma...`
+  - nvcc cubin does not keep analogous `CollectiveMainloopFwdSm90::mma` helpers
+  - nvcc helper symbols are only the expected reciprocal slowpaths:
+    - `$__internal_N_$__cuda_sm20_rcp_rn_f32_slowpath`
+- Clang-only debug / trap payload:
+  - clang PTX contains many `vprintf` call sites plus `brkpt`
+  - first example is effectively:
+    - test a condition
+    - call `vprintf`
+    - `brkpt`
+  - another block shows repeated `vprintf` plus `brkpt` sequences around `bar.sync`
+  - clang cubin has unresolved `vprintf` and local strings in `.nv.global.init`
+  - nvcc cubin does not expose `vprintf`
+- Current interpretation:
+  - the most correctness-relevant difference is not register pressure or occupancy
+  - clang is failing to flatten the GMMA mainloop into a single kernel body
+  - instead it preserves out-of-line `CollectiveMainloopFwdSm90::mma` helper calls and many local stack spills
+  - that lines up directly with the `ptxas` warning about WGMMA pipeline crossing function boundaries
+  - this is a much stronger lead for wrong results than any generic performance explanation
+- Missing-flag angle:
+  - among the obvious nvcc-only flags, `--dopt on` is the only one that plausibly explains the flattening difference
+  - `--extended-lambda` and `--expt-relaxed-constexpr` are frontend language-enablement flags and are much less plausible as a root cause here
+  - however, the evidence is still more consistent with a clang CUDA inlining / codegen bug than with a simple missing user flag:
+    - clang already compiles at `-O2`
+    - the bad helper calls are already present in clang PTX
+    - the resulting cubin retains those helper functions instead of collapsing them away like nvcc
+
+## 2026-04-03 Standalone GMMA Boundary Repro Draft
+
+- Added a standalone draft reproducer source:
+  - `tools/clang_gmma_boundary_repro.cu`
+- Added a small Bazel target for one-TU analysis:
+  - `//:clang-gmma-boundary-repro`
+- Goal of the draft source:
+  - isolate Hopper WGMMA codegen outside the FA3 kernel
+  - intentionally wrap the `cute::gemm(...)` WGMMA step inside:
+    - `gmma_leaf`
+    - `gmma_wrapper`
+    - `gmma_mainloop`
+  - and use nested lambdas in the helper chain to look more like the `CollectiveMainloopFwdSm90::mma` pattern that clang is currently outlining
+- The draft source uses:
+  - `SM90_64x64x16_F16F16F16_SS<GMMA::Major::K, GMMA::Major::K>`
+  - shared-memory A/B layouts based on:
+    - `GMMA::Layout_K_SW128_Atom`
+  - a single kernel entry:
+    - `clang_gmma_boundary_repro`
+- Important status:
+  - this is currently a source-level draft only
+  - it has not yet been compiled or validated
+  - the intended next check is whether clang emits:
+    - out-of-line helper calls in PTX / cubin
+    - `ptxas` `C7510` warnings
+  - and whether nvcc flattens the same source more aggressively
