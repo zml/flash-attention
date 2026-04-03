@@ -715,6 +715,95 @@ cuda_library(
     ],
 )
 
+cuda_library(
+    name = "flashattn-sm90-llama-aquery-gpu-threshold",
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_COMPILATION_HEADER_DEPS + [
+        "@cccl//:cub_headers",
+        "@cccl//:thrust_headers",
+        ":capi-hdrs",
+        "//:flashattn-sm90-headers",
+        "//:cute",
+        "//:cutlass",
+        "//:c10_stub",
+        "//:ATen_stub",
+    ],
+    defines = [
+        "FLASHATTENTION_DISABLE_BACKWARD",
+        "FLASHATTENTION_DISABLE_DROPOUT",
+        "FLASHATTENTION_DISABLE_SOFTCAP",
+        "FLASHATTENTION_VARLEN_ONLY",
+        "FLASHATTENTION_DISABLE_SM8x",
+        "FLASHATTENTION_DISABLE_APPENDKV",
+        "FLASHATTENTION_DISABLE_CLUSTER",
+        "CUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED",
+        "CUTLASS_ENABLE_GDC_FOR_SM90",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Icsrc/flash_attn/src",
+        "-U__CUDA_NO_HALF_OPERATORS__",
+        "-U__CUDA_NO_HALF_CONVERSIONS__",
+        "-U__CUDA_NO_HALF2_OPERATORS__",
+        "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+        "-fgpu-inline-threshold=100000",
+    ],
+    archs = ["sm_90a"],
+    srcs = [
+        "hopper/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.cu",
+    ],
+)
+
+cuda_library(
+    name = "flashattn-sm90-llama-aquery-llvm-threshold",
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_COMPILATION_HEADER_DEPS + [
+        "@cccl//:cub_headers",
+        "@cccl//:thrust_headers",
+        ":capi-hdrs",
+        "//:flashattn-sm90-headers",
+        "//:cute",
+        "//:cutlass",
+        "//:c10_stub",
+        "//:ATen_stub",
+    ],
+    defines = [
+        "FLASHATTENTION_DISABLE_BACKWARD",
+        "FLASHATTENTION_DISABLE_DROPOUT",
+        "FLASHATTENTION_DISABLE_SOFTCAP",
+        "FLASHATTENTION_VARLEN_ONLY",
+        "FLASHATTENTION_DISABLE_SM8x",
+        "FLASHATTENTION_DISABLE_APPENDKV",
+        "FLASHATTENTION_DISABLE_CLUSTER",
+        "CUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED",
+        "CUTLASS_ENABLE_GDC_FOR_SM90",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Icsrc/flash_attn/src",
+        "-U__CUDA_NO_HALF_OPERATORS__",
+        "-U__CUDA_NO_HALF_CONVERSIONS__",
+        "-U__CUDA_NO_HALF2_OPERATORS__",
+        "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+        "-mllvm",
+        "-inline-threshold=100000",
+    ],
+    archs = ["sm_90a"],
+    srcs = [
+        "hopper/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.cu",
+    ],
+)
+
 cc_library(
     name = "capi-sm90-llama-aquery",
     srcs = ["capi/capi_sm90.cc"],
@@ -820,6 +909,289 @@ cuda_library(
         "-finline-max-stacksize=4096",
         "-mllvm",
         "-inline-threshold=100000",
+    ],
+    archs = ["sm_90a"],
+)
+
+cuda_library(
+    name = "clang-gmma-boundary-repro-inline-no-o3",
+    srcs = ["hopper/clang_gmma_boundary_repro.cu"],
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_HEADER_DEPS + [
+        ":cute",
+        ":cutlass",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
+        "-fgpu-inline-threshold=100000",
+        "-finline-functions",
+        "-finline-hint-functions",
+        "-finline-max-stacksize=4096",
+        "-mllvm",
+        "-inline-threshold=100000",
+    ],
+    archs = ["sm_90a"],
+)
+
+cuda_library(
+    name = "clang-gmma-boundary-repro-inline-no-gpu-threshold",
+    srcs = ["hopper/clang_gmma_boundary_repro.cu"],
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_HEADER_DEPS + [
+        ":cute",
+        ":cutlass",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
+        "-O3",
+        "-finline-functions",
+        "-finline-hint-functions",
+        "-finline-max-stacksize=4096",
+        "-mllvm",
+        "-inline-threshold=100000",
+    ],
+    archs = ["sm_90a"],
+)
+
+cuda_library(
+    name = "clang-gmma-boundary-repro-inline-no-finline-functions",
+    srcs = ["hopper/clang_gmma_boundary_repro.cu"],
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_HEADER_DEPS + [
+        ":cute",
+        ":cutlass",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
+        "-O3",
+        "-fgpu-inline-threshold=100000",
+        "-finline-hint-functions",
+        "-finline-max-stacksize=4096",
+        "-mllvm",
+        "-inline-threshold=100000",
+    ],
+    archs = ["sm_90a"],
+)
+
+cuda_library(
+    name = "clang-gmma-boundary-repro-inline-no-finline-hint",
+    srcs = ["hopper/clang_gmma_boundary_repro.cu"],
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_HEADER_DEPS + [
+        ":cute",
+        ":cutlass",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
+        "-O3",
+        "-fgpu-inline-threshold=100000",
+        "-finline-functions",
+        "-finline-max-stacksize=4096",
+        "-mllvm",
+        "-inline-threshold=100000",
+    ],
+    archs = ["sm_90a"],
+)
+
+cuda_library(
+    name = "clang-gmma-boundary-repro-inline-no-stacksize",
+    srcs = ["hopper/clang_gmma_boundary_repro.cu"],
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_HEADER_DEPS + [
+        ":cute",
+        ":cutlass",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
+        "-O3",
+        "-fgpu-inline-threshold=100000",
+        "-finline-functions",
+        "-finline-hint-functions",
+        "-mllvm",
+        "-inline-threshold=100000",
+    ],
+    archs = ["sm_90a"],
+)
+
+cuda_library(
+    name = "clang-gmma-boundary-repro-inline-no-llvm-threshold",
+    srcs = ["hopper/clang_gmma_boundary_repro.cu"],
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_HEADER_DEPS + [
+        ":cute",
+        ":cutlass",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
+        "-O3",
+        "-fgpu-inline-threshold=100000",
+        "-finline-functions",
+        "-finline-hint-functions",
+        "-finline-max-stacksize=4096",
+    ],
+    archs = ["sm_90a"],
+)
+
+cuda_library(
+    name = "clang-gmma-boundary-repro-finline-functions-only",
+    srcs = ["hopper/clang_gmma_boundary_repro.cu"],
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_HEADER_DEPS + [
+        ":cute",
+        ":cutlass",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
+        "-finline-functions",
+    ],
+    archs = ["sm_90a"],
+)
+
+cuda_library(
+    name = "clang-gmma-boundary-repro-finline-hint-only",
+    srcs = ["hopper/clang_gmma_boundary_repro.cu"],
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_HEADER_DEPS + [
+        ":cute",
+        ":cutlass",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
+        "-finline-hint-functions",
+    ],
+    archs = ["sm_90a"],
+)
+
+cuda_library(
+    name = "clang-gmma-boundary-repro-finline-both",
+    srcs = ["hopper/clang_gmma_boundary_repro.cu"],
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_HEADER_DEPS + [
+        ":cute",
+        ":cutlass",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
+        "-finline-functions",
+        "-finline-hint-functions",
+    ],
+    archs = ["sm_90a"],
+)
+
+cuda_library(
+    name = "clang-gmma-boundary-repro-stacksize-only",
+    srcs = ["hopper/clang_gmma_boundary_repro.cu"],
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_HEADER_DEPS + [
+        ":cute",
+        ":cutlass",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
+        "-finline-max-stacksize=4096",
+    ],
+    archs = ["sm_90a"],
+)
+
+cuda_library(
+    name = "clang-gmma-boundary-repro-llvm-threshold-only",
+    srcs = ["hopper/clang_gmma_boundary_repro.cu"],
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_HEADER_DEPS + [
+        ":cute",
+        ":cutlass",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
+        "-mllvm",
+        "-inline-threshold=100000",
+    ],
+    archs = ["sm_90a"],
+)
+
+cuda_library(
+    name = "clang-gmma-boundary-repro-gpu-threshold-only",
+    srcs = ["hopper/clang_gmma_boundary_repro.cu"],
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_HEADER_DEPS + [
+        ":cute",
+        ":cutlass",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
+        "-fgpu-inline-threshold=100000",
     ],
     archs = ["sm_90a"],
 )

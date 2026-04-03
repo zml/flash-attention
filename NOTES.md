@@ -352,6 +352,161 @@ Interpretation:
 - the most likely explanation is that these added `--copt` flags did not actually affect the CUDA compile action in this `rules_cuda` path
 - before drawing a stronger conclusion, the next step should be to inspect the exact FA3 compile command with `-s` or `aquery` and verify whether the extra clang flags are reaching the device compile at all
 
+## Explicit Target-Copts Retest
+
+The previous `--copt`-based minimum-set conclusion was wrong.
+
+Re-running the sweep through explicit `cuda_library` targets in `BUILD.bazel` showed that the target `copts` do reach the CUDA compile action, and that the standalone reproducer is much easier to fix than the `--copt` experiment suggested.
+
+Verified from `-s` build logs:
+
+- the exact clang CUDA subcommand contains the added target `copts`
+- example flags visibly present in the command line:
+  - `-fgpu-inline-threshold=100000`
+  - `-mllvm -inline-threshold=100000`
+  - `-finline-functions`
+  - `-finline-hint-functions`
+  - `-finline-max-stacksize=4096`
+
+### Standalone Repro: Corrected Minimum Set
+
+Targets tested:
+
+- `//:clang-gmma-boundary-repro-inline`
+- `//:clang-gmma-boundary-repro-inline-no-o3`
+- `//:clang-gmma-boundary-repro-inline-no-gpu-threshold`
+- `//:clang-gmma-boundary-repro-inline-no-finline-functions`
+- `//:clang-gmma-boundary-repro-inline-no-finline-hint`
+- `//:clang-gmma-boundary-repro-inline-no-stacksize`
+- `//:clang-gmma-boundary-repro-inline-no-llvm-threshold`
+
+Result:
+
+- every leave-one-out target above still produces the good shape:
+  - `C7511`
+  - `REG:218 STACK:0`
+  - `CALL.REL:0`
+  - `STL:0`
+  - `LDL:0`
+  - `call.uni:0`
+
+So the previous belief that all six knobs were required was incorrect.
+
+To shrink further, explicit single-purpose targets were added and tested:
+
+- `//:clang-gmma-boundary-repro-finline-functions-only`
+- `//:clang-gmma-boundary-repro-finline-hint-only`
+- `//:clang-gmma-boundary-repro-finline-both`
+- `//:clang-gmma-boundary-repro-stacksize-only`
+- `//:clang-gmma-boundary-repro-llvm-threshold-only`
+- `//:clang-gmma-boundary-repro-gpu-threshold-only`
+
+Results:
+
+- still bad:
+  - `finline-functions-only`
+  - `finline-hint-only`
+  - `finline-both`
+  - `stacksize-only`
+  - all keep:
+    - `C7510`
+    - `REG:128 STACK:928`
+    - `CALL.REL:2`
+    - `STL:780`
+    - `LDL:32`
+    - `call.uni:2`
+- good with just one flag:
+  - `llvm-threshold-only`
+  - `gpu-threshold-only`
+  - both produce:
+    - `C7511`
+    - `REG:218 STACK:0`
+    - `CALL.REL:0`
+    - `STL:0`
+    - `LDL:0`
+    - `call.uni:0`
+
+Corrected conclusion for the standalone repro:
+
+- a single threshold knob is enough
+- either of these alone fixes the standalone repro shape:
+  - `-mllvm -inline-threshold=100000`
+  - `-fgpu-inline-threshold=100000`
+
+## Reduced FA3 Single-Flag Retest
+
+To avoid the earlier `--copt` ambiguity, explicit reduced-FA3 variant targets were added:
+
+- `//:flashattn-sm90-llama-aquery-gpu-threshold`
+- `//:flashattn-sm90-llama-aquery-llvm-threshold`
+
+Verified from `-s` logs:
+
+- the added threshold flags are present in the actual clang CUDA subcommands for:
+  - `hopper/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.cu`
+
+Artifacts:
+
+- baseline:
+  - `/tmp/fa3_minflag_targets/flashattn-sm90-llama-aquery.pic.o`
+  - sha256:
+    - `f42dfca5cf0bbbd327dd20c2ff79b563c10c7dac6f7b0091deb6198993a157b0`
+- gpu threshold only:
+  - `/tmp/fa3_minflag_targets/flashattn-sm90-llama-aquery-gpu-threshold.pic.o`
+  - sha256:
+    - `ce00f4aac70a1926ee350f722fb9b864acf52fd6fe8508d9fe2a3f45b6482468`
+- llvm threshold only:
+  - `/tmp/fa3_minflag_targets/flashattn-sm90-llama-aquery-llvm-threshold.pic.o`
+  - sha256:
+    - `bdff2118f94c8ac9b1ff3b9840f25b82d25b2d2b24cae24f1953f6f6bca093fe`
+
+Result:
+
+- both one-flag targets materially change the real FA3 TU
+- both still keep `C7510`, but substantially reduce the bad code shape
+
+Baseline reduced FA3:
+
+- `CALL.REL:76`
+- `STL:12223`
+- `LDL:4278`
+- `call.uni:142`
+- representative stacks:
+  - `880`
+  - `992`
+  - `1184`
+  - `1200`
+  - `1216`
+  - `1248`
+  - `1344`
+  - `1408`
+  - `1424`
+
+With either single threshold flag:
+
+- `CALL.REL:48`
+- `STL:660`
+- `LDL:612`
+- `call.uni:114`
+- representative stacks collapse to:
+  - `0`
+  - `16`
+  - `160`
+  - `168`
+  - `216`
+  - `224`
+  - `384`
+
+Interpretation:
+
+- the standalone signal does transfer to the real reduced FA3 TU
+- but only partially:
+  - threshold tuning shrinks the outlined/helper-heavy shape a lot
+  - it does not eliminate `C7510`
+- the real FA3 TU likely needs either:
+  - a stronger threshold/inlining change than the standalone repro
+  - or additional source-structure changes beyond threshold tuning alone
+
 ### FA2 device-symbol result
 
 - Extracted cubins:
