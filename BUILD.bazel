@@ -776,6 +776,76 @@ cuda_library(
     archs = ["sm_90a"],
 )
 
+cuda_library(
+    name = "clang-gmma-boundary-repro-o3",
+    srcs = ["hopper/clang_gmma_boundary_repro.cu"],
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_HEADER_DEPS + [
+        ":cute",
+        ":cutlass",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
+        "-O3",
+    ],
+    archs = ["sm_90a"],
+)
+
+cuda_library(
+    name = "clang-gmma-boundary-repro-inline",
+    srcs = ["hopper/clang_gmma_boundary_repro.cu"],
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_HEADER_DEPS + [
+        ":cute",
+        ":cutlass",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
+        "-O3",
+        "-fgpu-inline-threshold=100000",
+        "-finline-functions",
+        "-finline-hint-functions",
+        "-finline-max-stacksize=4096",
+        "-mllvm",
+        "-inline-threshold=100000",
+    ],
+    archs = ["sm_90a"],
+)
+
+cuda_library(
+    name = "clang-gmma-boundary-repro-nordc",
+    srcs = ["hopper/clang_gmma_boundary_repro.cu"],
+    includes = [
+        "csrc",
+        "csrc/cutlass/include",
+        "hopper",
+    ],
+    deps = CUDA_HEADER_DEPS + [
+        ":cute",
+        ":cutlass",
+    ],
+    copts = [
+        "-Icsrc",
+        "-Icsrc/cutlass/include",
+        "-Ihopper",
+        "-O3",
+        "-fno-gpu-rdc",
+    ],
+    archs = ["sm_90a"],
+)
+
 cc_shared_library(
     name = "flashattn_so",
     shared_lib_name = "libflashattn.so",

@@ -255,6 +255,100 @@ Use this small reproducer to test whether any clang-side flag can remove the bad
   - `call.uni` / `CALL.REL`
   - the `928` byte local stack
 
+## New Strategy
+
+We are now splitting the work into two tracks, with the flag track first.
+
+### Track A: clang flag experiments on the current repro
+
+Use the current `hopper/clang_gmma_boundary_repro.cu` as the baseline because it already reproduces:
+
+- clang `C7510`
+- outlined helper calls
+- `STACK:928`
+- heavy `STL` / `LDL`
+- nvcc staying stack-free on the same source
+
+The goal is to test whether any clang-side codegen or inlining flag can force a more nvcc-like lowering without changing the source.
+
+Acceptance criteria for a promising flag variant:
+
+- `C7510` disappears
+- `call.uni` / `CALL.REL` disappear
+- stack collapses substantially or reaches zero
+
+### First flag sweep
+
+Added clang-only comparison targets in `BUILD.bazel`:
+
+- `//:clang-gmma-boundary-repro`
+- `//:clang-gmma-boundary-repro-o3`
+- `//:clang-gmma-boundary-repro-inline`
+- `//:clang-gmma-boundary-repro-nordc`
+
+The first sweep was run from clean builds and copied snapshots were written to:
+
+- `/tmp/gmma_flag_sweep/`
+
+Tested flag sets:
+
+- baseline:
+  - no extra codegen flags beyond the original repro target
+- `-O3`:
+  - just add `-O3`
+- inline bundle:
+  - `-O3`
+  - `-fgpu-inline-threshold=100000`
+  - `-finline-functions`
+  - `-finline-hint-functions`
+  - `-finline-max-stacksize=4096`
+  - `-mllvm -inline-threshold=100000`
+- explicit no-RDC:
+  - `-O3`
+  - `-fno-gpu-rdc`
+
+Results:
+
+- baseline:
+  - still emits `C7510`
+  - `REG:128 STACK:928`
+  - `CALL.REL:2`
+  - `STL:780`
+  - `LDL:32`
+  - `call.uni:2`
+- `-O3`:
+  - identical to baseline
+- `-fno-gpu-rdc`:
+  - identical to baseline
+- inline bundle:
+  - `C7510` disappears
+  - warning changes to `C7511`, matching nvcc's warning class
+  - `REG:218 STACK:0`
+  - `CALL.REL:0`
+  - `STL:0`
+  - `LDL:0`
+  - `call.uni:0`
+
+Interpretation:
+
+- `-O3` alone is not enough
+- explicit `-fno-gpu-rdc` is irrelevant here
+- the bad clang behavior is highly sensitive to inlining thresholds and stack-budget heuristics
+- the inline bundle is the first concrete flag-based workaround candidate because it forces clang into the same high-register / zero-stack shape that nvcc already chooses
+
+### Track B: monotonic source minimization
+
+Source minimization is still worthwhile, but only if the reduced source preserves the exact bad signal.
+
+This means reducing one ingredient at a time and only keeping variants that still show:
+
+- clang `C7510`
+- clang helper outlining / calls
+- clang nonzero stack and local-memory traffic
+- nvcc no `C7510`
+
+The current plan is to defer this until after the first round of flag experiments, to avoid accidentally minimizing away the critical trigger before we test for a usable workaround.
+
 ## Historical Notes
 
 The previous running log has been preserved in:
