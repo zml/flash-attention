@@ -839,3 +839,69 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
   - isolate which helper calls remain out-of-line in clang for this TU
   - diff the exact clang vs nvcc compile lines for the PIC action using `-s`
   - try a direct clang replay of the TU with candidate codegen-affecting deltas only, then check whether the `C7510` warning and large `STACK` usage disappear
+
+## 2026-04-03 PIC vs Non-PIC Within Each Compiler
+
+- Switched the comparison axis from `clang vs nvcc` to `PIC vs non-PIC` within each compiler for the same TU:
+  - `hopper/instantiations/flash_fwd_hdim128_bf16_paged_split_sm90.cu`
+- Compared four copied artifacts:
+  - clang non-PIC:
+    - `/tmp/fa3_forcepic/clang_nonpic.o`
+    - size `1840672`
+    - sha256 `3a51cef658be5cc632a115d8b1104383604cc3a9c69ca13f5d9fb9a7682f4501`
+  - clang PIC:
+    - `/tmp/fa3_forcepic/clang_paged_split.pic.o`
+    - size `2739904`
+    - sha256 `abaa2e24d7fe2a36cb6a01c22d075a2c3696cb28315db4f3508f3680728cdd9f`
+  - nvcc non-PIC:
+    - `/tmp/fa3_forcepic/nvcc_nonpic.o`
+    - size `1840672`
+    - sha256 `3a51cef658be5cc632a115d8b1104383604cc3a9c69ca13f5d9fb9a7682f4501`
+  - nvcc PIC:
+    - `/tmp/fa3_forcepic/nvcc_paged_split.pic.o`
+    - size `1840096`
+    - sha256 `fa109c7e08664f4b7c68deda45f4870000e69a31f9ad92a5b219d75e59f81323`
+- Non-PIC result:
+  - clang non-PIC and nvcc non-PIC objects are identical for this TU
+  - extracted non-PIC fatbins are also identical:
+    - clang non-PIC fatbin sha256 `e3d195e527be771268187c8bca65ab718ffcf2963a9d4d35907bea308b0e1993`
+    - nvcc non-PIC fatbin sha256 `e3d195e527be771268187c8bca65ab718ffcf2963a9d4d35907bea308b0e1993`
+- nvcc PIC vs non-PIC result:
+  - nvcc object hash changes, but the extracted fatbin size stays the same (`1256800`)
+  - nvcc PIC fatbin hash differs from nvcc non-PIC fatbin:
+    - non-PIC `e3d195e527be771268187c8bca65ab718ffcf2963a9d4d35907bea308b0e1993`
+    - PIC `a3f8ed20abac4e96006b7aacbde65b55bdfc3ffcc7f673865acd18c33f9a056d`
+  - however, `cuobjdump --dump-resource-usage` is identical between nvcc PIC and non-PIC:
+    - same `REG`
+    - same `STACK`
+    - same `SHARED`
+    - same `CONSTANT`
+  - `cuobjdump --dump-elf` `.text._ZN7cutlass...` lines diff cleanly with no output
+  - neither nvcc object contains extractable PTX
+  - interpretation:
+    - for nvcc on this TU, `--force_pic` changes packaging / metadata, but not the device program shape seen in the cubin resource table or `.text` section sizes
+- clang PIC vs non-PIC result:
+  - clang non-PIC fatbin size is `1256800`, matching nvcc non-PIC
+  - clang PIC fatbin jumps to `2558808`
+  - clang PIC fatbin also adds embedded PTX, while clang non-PIC does not expose PTX
+  - `cuobjdump --dump-resource-usage` changes drastically under clang when `--force_pic` is enabled:
+    - non-PIC:
+      - `GLOBAL:12 CONSTANT[4]:96`
+      - kernel `STACK` values are `0` or `8`
+      - `REG`/`SHARED` match nvcc
+    - PIC:
+      - `GLOBAL:188 CONSTANT[4]:32`
+      - kernel `STACK` values jump to roughly `880` to `1424`
+      - `REG` remains roughly the same as non-PIC
+  - `cuobjdump --dump-elf` for clang PIC vs non-PIC shows a different section layout and different symbol naming:
+    - non-PIC uses `cutlass13device_kernel...`
+    - PIC uses `cutlassL13device_kernel...`
+  - interpretation:
+    - for clang on this TU, `--force_pic` is not a minor metadata change
+    - it changes the generated device program substantially
+- Current conclusion from the within-compiler comparison:
+  - nvcc:
+    - PIC vs non-PIC has no meaningful effect on device code shape for this TU
+  - clang:
+    - PIC vs non-PIC is the real trigger for the pathological device code shape
+    - the large `STACK`, extra calls, extra PTX, and larger fatbin all appear only on the clang PIC path
