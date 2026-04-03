@@ -65,21 +65,17 @@ template <class TiledMma, class MmaSlice, class SmemTensorA, class SmemTensorB, 
 CUTE_DEVICE void gmma_leaf(TiledMma& tiled_mma, MmaSlice const& mma_slice, SmemTensorA const& sA, SmemTensorB const& sB, GmemTensorC const& gC) {
   Tensor tCrA = mma_slice.partition_fragment_A(sA);
   Tensor tCrB = mma_slice.partition_fragment_B(sB);
-  Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<128>, Int<128>>{});
-  clear(acc_s);
-
-  gmma</*zero_init=*/true, /*wg_wait=*/0>(tiled_mma, tCrA(_, _, _, 0), tCrB(_, _, _, 0), acc_s);
-
-  Tensor tOrP = make_tensor(acc_s.data(), convert_layout_acc_Aregs<TiledMma>(acc_s.layout()));
-  Tensor rP = make_tensor_like<cutlass::half_t>(tOrP);
-  convert_type_out(tOrP, rP);
-
   auto dst = mma_slice.partition_C(gC);
-  axpby(1.0f, rP, 0.0f, dst);
-}
+  Tensor tOrO = mma_slice.make_fragment_C(dst);
+  clear(tOrO);
 
-template <class TiledMma, class MmaSlice, class SmemTensorA, class SmemTensorB, class GmemTensorC>
-CUTE_DEVICE void gmma_wrapper(TiledMma& tiled_mma, MmaSlice const& mma_slice, SmemTensorA const& sA, SmemTensorB const& sB, GmemTensorC const& gC) {
+  Tensor tOrP = make_tensor_like<cutlass::half_t>(make_tensor(tOrO.data(), convert_layout_acc_Aregs<TiledMma>(tOrO.layout())));
+  cutlass::Array<float, 8> scores_scale;
+  #pragma unroll
+  for (int i = 0; i < 8; ++i) {
+    scores_scale[i] = 1.0f;
+  }
+
   auto scoremod = [&](auto& acc) {
     #pragma unroll
     for (int i = 0; i < size(acc); ++i) {
@@ -87,22 +83,53 @@ CUTE_DEVICE void gmma_wrapper(TiledMma& tiled_mma, MmaSlice const& mma_slice, Sm
     }
   };
 
-  auto fwd_step = [&](auto const& run_gemm) {
-    auto tmp_acc = partition_fragment_C(tiled_mma, Shape<Int<128>, Int<128>>{});
-    clear(tmp_acc);
-    run_gemm(tmp_acc);
-    scoremod(tmp_acc);
+  auto rescale_o = [&](float scale) {
+    #pragma unroll
+    for (int i = 0; i < size(tOrO); ++i) {
+      tOrO(i) = tOrO(i);
+    }
   };
 
-  fwd_step([&](auto&) {
-    gmma_leaf(tiled_mma, mma_slice, sA, sB, gC);
-  });
+  auto finalize_dispatch = [&](float bias) {
+    #pragma unroll
+    for (int i = 0; i < 8; ++i) {
+      scores_scale[i] += bias;
+    }
+  };
+
+  auto fwd_step = [&](int iter, auto scoremod_fn, auto check_inf_type) {
+    static constexpr bool CheckInf = decltype(check_inf_type)::value;
+    Tensor tSrS = partition_fragment_C(tiled_mma, Shape<Int<128>, Int<128>>{});
+    clear(tSrS);
+    gmma</*zero_init=*/true, /*wg_wait=*/-1>(tiled_mma, tCrA(_, _, _, 0), tCrB(_, _, _, 0), tSrS);
+    scoremod_fn(tSrS);
+    Tensor tOrP_acc = make_tensor(tSrS.data(), convert_layout_acc_Aregs<TiledMma>(tSrS.layout()));
+    convert_type_out(tOrP_acc, tOrP);
+    if constexpr (CheckInf) {
+      rescale_o(0.5f);
+    } else {
+      rescale_o(0.75f);
+    }
+    finalize_dispatch(static_cast<float>(iter));
+  };
+
+  auto masked = [&](auto& tSrS) {
+    scoremod(tSrS);
+  };
+  auto unmasked = [&](auto& tSrS) {
+    scoremod(tSrS);
+  };
+
+  fwd_step(0, masked, cute::true_type{});
+  fwd_step(1, unmasked, cute::false_type{});
+
+  axpby(1.0f, tOrP, 0.0f, dst);
 }
 
 template <int Repeat, class TiledMma, class MmaSlice, class SmemTensorA, class SmemTensorB, class GmemTensorC>
 CUTE_DEVICE void gmma_step(TiledMma& tiled_mma, MmaSlice const& mma_slice, SmemTensorA const& sA, SmemTensorB const& sB, GmemTensorC const& gC) {
   if constexpr (Repeat >= 0) {
-    gmma_wrapper(tiled_mma, mma_slice, sA, sB, gC);
+    gmma_leaf(tiled_mma, mma_slice, sA, sB, gC);
   }
 }
 

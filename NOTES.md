@@ -76,6 +76,57 @@ The working hypothesis is no longer "general FA3 runtime repro first." The curre
   - still builds under both clang and nvcc
   - still does not reproduce the FA3 spill / call pattern
 
+### Attempt 3
+
+- Same file:
+  - `hopper/clang_gmma_boundary_repro.cu`
+- New shape:
+  - pulled the standalone toy closer to the `fwd_step` pressure pattern
+  - keeps outer live state across the closure:
+    - `tOrO`
+    - `tOrP`
+    - small `scores_scale`
+  - does conversion inside the closure:
+    - `convert_layout_acc_Aregs(...)`
+    - `convert_type_out(...)`
+  - adds outer helper lambdas:
+    - `scoremod`
+    - `rescale_o`
+    - `finalize_dispatch`
+    - `fwd_step`
+- Build results:
+  - clang:
+    - BuildBuddy: `261cceb3-101e-40ac-b4bb-8e9497c0d5b5`
+  - nvcc:
+    - BuildBuddy: `86e64d53-ad33-4843-a7d3-b9f11c2492c4`
+- New copied snapshots:
+  - clang:
+    - `/tmp/gmma_repro_compare_v3/clang.o`
+    - `/tmp/gmma_repro_compare_v3/clang.pic.o`
+    - `.o == .pic.o`
+    - sha256: `569fde9f7aae2979a39950f6577d0eb48520f4dc9e39ad790d8a656bbca682fa`
+  - nvcc:
+    - `/tmp/gmma_repro_compare_v3/nvcc.o`
+    - `/tmp/gmma_repro_compare_v3/nvcc.pic.o`
+    - non-PIC sha256: `683df66a4af118e6e6daa6485b1febf84865b914bc729e3199bdb9f2867c4a4f`
+    - PIC sha256: `9c970eaee7f3f27ba34c626c233534ea0f82431b13cc7401560bba27ecc10543`
+- Important new result:
+  - this source is now enough to trigger a real WGMMA pipeline warning in the standalone reproducer
+  - both clang and nvcc emit:
+    - `C7517`
+    - `warpgroup.wait is injected ... to allow use of registers defined by GMMA`
+- Resource / code-shape result:
+  - still no clang-only spill or call explosion
+  - clang:
+    - `REG:96 STACK:0 SHARED:1024 GLOBAL:0`
+  - nvcc:
+    - `REG:96 STACK:0 SHARED:1024 GLOBAL:12 CONSTANT[4]:96`
+  - still no obvious `CALL`, `CALL.ABS`, `STL`, or `LDL` in either SASS dump
+- Interpretation:
+  - moving live state and the QK-to-`tOrP` conversion into the closure was enough to create a real WGMMA hazard
+  - but it is still not enough to reproduce the FA3 clang-only pathological lowering
+  - the next missing ingredient is likely the real PV handoff and/or pipeline/barrier state rather than just closure pressure
+
 ## Current Interpretation
 
 Nested lambdas plus a local WGMMA helper are not enough on their own.
