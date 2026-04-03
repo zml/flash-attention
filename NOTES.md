@@ -905,3 +905,32 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
   - clang:
     - PIC vs non-PIC is the real trigger for the pathological device code shape
     - the large `STACK`, extra calls, extra PTX, and larger fatbin all appear only on the clang PIC path
+
+## 2026-04-03 PTX-Suppression Flag Check
+
+- Tested whether clang's extra embedded PTX was the cause of the PIC-path divergence by adding:
+  - `--no-cuda-include-ptx=all`
+  - to the reduced target's `copts`
+- Rebuilt the same PIC target with clang and copied:
+  - `/tmp/fa3_forcepic/clang_paged_split.pic.noptxflag.o`
+- Result:
+  - the extracted fatbin is byte-for-byte identical to the previous clang PIC fatbin:
+    - `/tmp/fa3_forcepic/clang_pic_noptxflag.fatbin`
+    - sha256 `6910f75733cbcc28d9aabf902270f5901561153174477b68c0b92ea2c986d445`
+    - matches `/tmp/fa3_forcepic/clang_pic.fatbin`
+  - `cuobjdump --list-ptx` still reports embedded PTX
+  - `cuobjdump --dump-resource-usage` is unchanged:
+    - same large `STACK` values (`880` to `1424`)
+    - same `REG`
+    - same `GLOBAL:188`
+    - same `CONSTANT[4]:32`
+  - the build log still reports repeated `ptxas` `C7510` warnings about:
+    - `wgmma.mma_async instructions are serialized due to wgmma pipeline crossing function boundary`
+- Interpretation:
+  - passing `--no-cuda-include-ptx=all` through this Bazel `rules_cuda` clang path did not affect the produced device payload for this TU
+  - therefore, embedded PTX is not the cause of the bad PIC-path device code
+  - either:
+    - the option is ineffective / ignored in this compilation path, or
+    - the pathological cubin is being produced independently of whether PTX is also packaged
+- Updated working hypothesis:
+  - the relevant problem remains clang's PIC-path device codegen itself, especially out-of-line call boundaries in the WGMMA path
