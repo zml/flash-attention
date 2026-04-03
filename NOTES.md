@@ -934,3 +934,102 @@ Build a minimal, repeatable repro for FA3 forward-pass misbehavior seen from a c
     - the pathological cubin is being produced independently of whether PTX is also packaged
 - Updated working hypothesis:
   - the relevant problem remains clang's PIC-path device codegen itself, especially out-of-line call boundaries in the WGMMA path
+
+## 2026-04-03 Clean Rerun Correction
+
+- Re-ran the reduced target from scratch and copied snapshots directly out of the same fresh Bazel builds:
+  - clang:
+    - `/tmp/clean_compare_clang.o`
+    - `/tmp/clean_compare_clang.pic.o`
+  - nvcc:
+    - `/tmp/clean_compare_nvcc.o`
+    - `/tmp/clean_compare_nvcc.pic.o`
+- Corrected results:
+  - clang `.o` and `.pic.o` are identical for this TU:
+    - size `2739904`
+    - sha256 `abaa2e24d7fe2a36cb6a01c22d075a2c3696cb28315db4f3508f3680728cdd9f`
+  - nvcc `.o` and `.pic.o` differ:
+    - non-PIC size `1840672`, sha256 `21554a541fdc1b81fe459fee503d38b4cdfe690caa39ec3433db11d68b9d8d03`
+    - PIC size `1840096`, sha256 `fa109c7e08664f4b7c68deda45f4870000e69a31f9ad92a5b219d75e59f81323`
+- Extracted fatbins from the clean rerun:
+  - clang non-PIC and PIC are identical:
+    - sha256 `6910f75733cbcc28d9aabf902270f5901561153174477b68c0b92ea2c986d445`
+  - nvcc non-PIC and PIC differ:
+    - non-PIC `e3d195e527be771268187c8bca65ab718ffcf2963a9d4d35907bea308b0e1993`
+    - PIC `a3f8ed20abac4e96006b7aacbde65b55bdfc3ffcc7f673865acd18c33f9a056d`
+- Corrected interpretation:
+  - the earlier theory that `-fPIC` is the trigger for the bad clang device code was wrong
+  - the robust signal is instead clang vs nvcc on the same TU:
+    - clang device payload differs substantially from nvcc even in the normal `.o`
+    - clang keeps huge stack frames and extra calls
+    - nvcc does not
+
+## 2026-04-03 Clang vs nvcc PIC Cubin / PTX Disassembly
+
+- Compared the clean copied PIC objects:
+  - clang: `/tmp/clean_compare_clang.pic.o`
+  - nvcc: `/tmp/clean_compare_nvcc.pic.o`
+- Extracted cubins:
+  - clang cubin:
+    - `/tmp/clang_nvcc_pic_analysis/clean_compare_clang.pic.1.sm_90a.cubin`
+    - size `2229968`
+  - nvcc cubin:
+    - `/tmp/clang_nvcc_pic_analysis/clean_compare_nvcc.pic.1.sm_90a.cubin`
+    - size `1256720`
+- `cuobjdump --dump-resource-usage`:
+  - clang:
+    - `GLOBAL:188 CONSTANT[4]:32`
+    - `STACK` roughly `880` to `1424`
+    - `REG` counts still close to nvcc (`168`, `254`, `255`)
+    - `SHARED:1024`
+  - nvcc:
+    - `GLOBAL:12 CONSTANT[4]:96`
+    - `STACK` `0` or `8`
+    - same `REG` ballpark
+    - `SHARED:1024`
+- `cuobjdump --dump-sass` global instruction counts:
+  - clang:
+    - `CALL`: `190`
+    - `CALL.ABS`: `114`
+    - `RET`: `48`
+    - `STL`: `12223`
+    - `LDL`: `4278`
+  - nvcc:
+    - `CALL`: `48`
+    - `CALL.ABS`: `0`
+    - `RET`: `12`
+    - `STL`: `9`
+    - `LDL`: `6`
+- The clang PTX already contains the problematic calls; this is not just a late `ptxas` artifact:
+  - `call.uni _ZZN5flash25CollectiveMainloopFwdSm90...3mma...`
+  - repeated many times across the TU
+  - these are exactly the kind of function boundaries that match the repeated clang-side `ptxas` `C7510` warnings:
+    - `wgmma.mma_async instructions are serialized due to wgmma pipeline crossing function boundary`
+- The extracted clang cubin symbol table also keeps extra callable helper functions:
+  - weak helper symbols named like:
+    - `$_ZN7cutlassL13device_kernel...$_ZZN5flash25CollectiveMainloopFwdSm90...3mma...`
+  - nvcc cubin does not keep analogous `CollectiveMainloopFwdSm90::mma` helpers
+  - nvcc helper symbols are only the expected reciprocal slowpaths:
+    - `$__internal_N_$__cuda_sm20_rcp_rn_f32_slowpath`
+- Clang-only debug / trap payload:
+  - clang PTX contains many `vprintf` call sites plus `brkpt`
+  - first example is effectively:
+    - test a condition
+    - call `vprintf`
+    - `brkpt`
+  - another block shows repeated `vprintf` plus `brkpt` sequences around `bar.sync`
+  - clang cubin has unresolved `vprintf` and local strings in `.nv.global.init`
+  - nvcc cubin does not expose `vprintf`
+- Current interpretation:
+  - the most correctness-relevant difference is not register pressure or occupancy
+  - clang is failing to flatten the GMMA mainloop into a single kernel body
+  - instead it preserves out-of-line `CollectiveMainloopFwdSm90::mma` helper calls and many local stack spills
+  - that lines up directly with the `ptxas` warning about WGMMA pipeline crossing function boundaries
+  - this is a much stronger lead for wrong results than any generic performance explanation
+- Missing-flag angle:
+  - among the obvious nvcc-only flags, `--dopt on` is the only one that plausibly explains the flattening difference
+  - `--extended-lambda` and `--expt-relaxed-constexpr` are frontend language-enablement flags and are much less plausible as a root cause here
+  - however, the evidence is still more consistent with a clang CUDA inlining / codegen bug than with a simple missing user flag:
+    - clang already compiles at `-O2`
+    - the bad helper calls are already present in clang PTX
+    - the resulting cubin retains those helper functions instead of collapsing them away like nvcc
