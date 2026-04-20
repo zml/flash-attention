@@ -3,11 +3,11 @@
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd -- "${script_dir}/.." && pwd)"
+repo_root="$(pwd)"
 
 image_tag="${FLASHATTN_DOCKER_IMAGE:-flashattn-builder:latest}"
 container_name="${FLASHATTN_DOCKER_CONTAINER:-flashattn-builder-extract-$$}"
-artifact_path="${FLASHATTN_ARTIFACT_PATH:-${repo_root}/bazel-bin/libflashattn.so}"
+artifact_path="${FLASHATTN_ARTIFACT_PATH:-${repo_root}/libflashattn.so}"
 container_workspace="/flashattn"
 container_artifact_path="${container_workspace}/bazel-bin/libflashattn.so"
 
@@ -23,7 +23,12 @@ docker build -t "${image_tag}" "${repo_root}"
 docker create \
     --name "${container_name}" \
     -v "${repo_root}:${container_workspace}" \
-    "${image_tag}" >/dev/null
+    "${image_tag}" \
+    build \
+    --config docker \
+    -c opt \
+    //:flashattn_so \
+    >/dev/null
 
 docker start -a "${container_name}"
 docker cp -L "${container_name}:${container_artifact_path}" "${artifact_path}"

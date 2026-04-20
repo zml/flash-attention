@@ -55,3 +55,6 @@ test            --test_output=errors
 common          --incompatible_disallow_empty_glob=false
 
 build           --@rules_cuda//cuda:enable=True
+
+common:docker       --spawn_strategy=standalone
+common:docker       --watchfs=false

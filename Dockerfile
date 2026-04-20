@@ -2,6 +2,7 @@ FROM ubuntu:22.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG BAZELISK_VERSION=v1.25.0
+ARG TARGETARCH=amd64
 
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
@@ -18,7 +19,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL -o /usr/local/bin/bazel \
-        https://github.com/bazelbuild/bazelisk/releases/download/${BAZELISK_VERSION}/bazelisk-linux-amd64 \
+    https://github.com/bazelbuild/bazelisk/releases/download/${BAZELISK_VERSION}/bazelisk-linux-${TARGETARCH} \
     && chmod +x /usr/local/bin/bazel
 
-CMD ["bazel", "build", "-c", "opt", "//:flashattn"]
+COPY .bazelversion .
+
+RUN USE_BAZEL_VERSION=$(cat .bazelversion) bazel version
+
+ENTRYPOINT ["bazel"]
+CMD ["build", "--config", "docker", "-c", "opt", "//:flashattn_so"]
