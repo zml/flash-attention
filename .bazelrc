@@ -55,6 +55,3 @@ test            --test_output=errors
 common          --incompatible_disallow_empty_glob=false
 
 build           --@rules_cuda//cuda:enable=True
-
-common          --repo_env=CC=clang-18
-common          --repo_env=CUDA_HOME=/usr/local/cuda-13.0/
