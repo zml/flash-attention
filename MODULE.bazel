@@ -11,14 +11,25 @@ bazel_dep(name = "platforms", version = "0.0.11")
 
 archive_override(
     module_name = "rules_cuda",
-    url = "https://github.com/bazel-contrib/rules_cuda/archive/bfea6eea03ea6acd174ab21ba6309d08d358d0d7.tar.gz",
-    strip_prefix = "rules_cuda-bfea6eea03ea6acd174ab21ba6309d08d358d0d7",
+    url = "https://github.com/bazel-contrib/rules_cuda/archive/060e6e8d4c525bc079ec05c46f470941cc980b52.tar.gz",
+    strip_prefix = "rules_cuda-060e6e8d4c525bc079ec05c46f470941cc980b52",
+    sha256 = "746fe26eabf4836c7f680061594045343f7cf793b8d1056ff84341b1e6492ab9",
 )
 
 cuda = use_extension("@rules_cuda//cuda:extensions.bzl", "toolchain")
+
+cuda.redist_json(
+    name = "cuda_13_1_1",
+    version = "13.1.1",
+    platforms = [
+        "linux-x86_64",
+        "linux-sbsa",
+        "linux-aarch64",
+    ],
+)
+
 cuda.toolkit(
     name = "cuda",
-    toolkit_path = "/usr/local/cuda-13.0",
 )
 use_repo(cuda, "cuda")
 
