@@ -1,0 +1,57 @@
+name: Build flash-attention artifacts
+
+on:
+  workflow_call:
+
+jobs:
+  flash-attention-artifacts:
+    runs-on: ${{ matrix.build.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build:
+          - platform: linux-amd64
+            cuda_platform: linux-x86_64
+            runs_on:
+              ["runs-on", "cpu=128", "family=m+c", "image=ubuntu22-amd64"]
+          - platform: linux-arm64
+            cuda_platform: linux-sbsa
+            runs_on:
+              ["runs-on", "cpu=96", "family=m+c", "image=ubuntu22-full-arm64"]
+
+    steps:
+      - uses: runs-on/action@v1
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-version: 1.26.0
+          bazelisk-cache: false
+          bazelrc: |
+            common --verbose_failures
+            common --color=yes
+            common --show_timestamps
+
+      - name: Build shared library
+        run: |
+          bazel build \
+            -c opt \
+            //:flashattn_so \
+            --@rules_cuda//cuda:exec_platform=${{ matrix.build.cuda_platform }} \
+            --@rules_cuda//cuda:target_platform=${{ matrix.build.cuda_platform }}
+
+      - name: Package ${{ matrix.build.platform }} artifact
+        run: |
+          artifact_dir="flash-attention_${{ matrix.build.platform }}"
+          mkdir -p "${artifact_dir}/lib" "${artifact_dir}/include"
+          cp bazel-bin/libflashattn.so "${artifact_dir}/lib/libflashattn.so"
+          cp capi/capi.h "${artifact_dir}/include/capi.h"
+          tar -czf "${artifact_dir}.tar.gz" -C "${artifact_dir}" .
+
+      - name: Upload ${{ matrix.build.platform }} artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flash-attention_${{ matrix.build.platform }}.tar.gz
+          path: flash-attention_${{ matrix.build.platform }}.tar.gz
