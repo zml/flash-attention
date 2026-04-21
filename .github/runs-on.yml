@@ -1,0 +1,25 @@
+images:
+  ubuntu24-amd64:
+    platform: "linux"
+    arch: "amd64"
+    ami: "ami-04a92520784b93e73"
+    disk: large
+    preinstall: |
+      #!/bin/bash
+      apt update && apt install -y curl build-essential
+  ubuntu22-amd64:
+    platform: "linux"
+    arch: "amd64"
+    ami: "ami-04a4acda26ca36de0"
+    disk: large
+    preinstall: |
+      #!/bin/bash
+      apt update && apt install -y curl build-essential
+  ubuntu22-arm64:
+    platform: "linux"
+    arch: "arm64"
+    ami: "ami-080565b2a8d78af19"
+    disk: large
+    preinstall: |
+      #!/bin/bash
+      apt update && apt install -y curl build-essential

@@ -17,7 +17,7 @@ jobs:
           - platform: linux-arm64
             cuda_platform: linux-sbsa
             runs_on:
-              ["runs-on", "cpu=96", "family=m+c", "image=ubuntu22-full-arm64"]
+              ["runs-on", "cpu=96", "family=m+c", "image=ubuntu22-arm64"]
 
     steps:
       - uses: runs-on/action@v1
