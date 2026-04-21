@@ -13,7 +13,7 @@ jobs:
           - platform: linux-amd64
             cuda_platform: linux-x86_64
             runs_on:
-              ["runs-on", "cpu=128", "family=m+c", "image=ubuntu22-full-amd64"]
+              ["runs-on", "cpu=128", "family=m+c", "image=ubuntu22-full-x64"]
           - platform: linux-arm64
             cuda_platform: linux-sbsa
             runs_on:
